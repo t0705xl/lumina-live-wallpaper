@@ -1,26 +1,41 @@
+<div align="center">
+
 # Lumina Live Wallpaper & Monet Engine
 
-<p align="center">
-  <img src="assets/hero-banner.png" alt="Lumina Overview Banner" width="100%" />
-</p>
+**跨平台硬件加速动态视频壁纸与 Material Design 3 (Monet) 桌面色彩同步工具**
 
-<p align="center">
-  <b>跨平台硬件加速动态视频壁纸与 Material Design 3 (Monet) 桌面色彩同步工具</b><br/>
-  支持 <b>Linux (GNOME 45–50)</b> 与 <b>Windows 10 / 11</b>
-</p>
+[![Linux GNOME](https://img.shields.io/badge/Linux-GNOME%2045--50-FCC624?style=for-the-badge&logo=linux&logoColor=black)](#linux-fedora--ubuntu--arch--gnome-4550)
+[![Windows 10/11](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D6?style=for-the-badge&logo=windows11&logoColor=white)](#windows-10--11)
+[![License: MIT](https://img.shields.io/badge/License-MIT-2EA44F?style=for-the-badge)](LICENSE)
+
+<!-- Tech Stack Color Badges -->
+![Python 3](https://img.shields.io/badge/Python_3-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![GJS](https://img.shields.io/badge/GJS_(ES6)-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black)
+![GTK 4](https://img.shields.io/badge/GTK_4.0-4A86CF?style=for-the-badge&logo=gtk&logoColor=white)
+![GStreamer](https://img.shields.io/badge/GStreamer_DMABuf-E53935?style=for-the-badge&logo=gstreamer&logoColor=white)
+![OpenGL GLSL](https://img.shields.io/badge/OpenGL_GLSL-5586A4?style=for-the-badge&logo=opengl&logoColor=white)
+![GNOME Shell](https://img.shields.io/badge/GNOME_Shell-241F31?style=for-the-badge&logo=gnome&logoColor=white)
+![Win32 API](https://img.shields.io/badge/Win32_WorkerW_%26_DWM-005FB8?style=for-the-badge&logo=windows&logoColor=white)
+![Material Design 3](https://img.shields.io/badge/Material_You_(Monet)-6750A4?style=for-the-badge&logo=materialdesign&logoColor=white)
+
+<br/>
+
+<img src="assets/hero-banner.png" alt="Lumina Overview Banner" width="100%" />
+
+</div>
 
 ---
 
 ## 🛠️ 技术栈 (Tech Stack)
 
-本项目采用 **「跨平台核心层 + 操作系统原生适配层」** 结构，尽可能复用系统底层自带的图形与多媒体组件，避免引入庞大的前端框架（如 Electron / CEF）：
+本项目采用 **「跨平台核心层 + 操作系统原生适配层」** 结构，直接调用系统底层图形与多媒体接口，无需依赖 Electron / CEF 等重型运行时：
 
-| 层级 / 平台 | 核心组件与技术栈 | 负责功能 |
+| 模块层级 | 技术栈色块标识 | 核心实现说明 |
 | :--- | :--- | :--- |
-| **跨平台核心层 (`core/`)** | **Python 3** + **Pillow (`PIL`)** + `colorsys` | 基于 HSL 色彩空间提取壁纸主色相与饱和度，计算深色（Dark）/ 浅色（Light）双模 Material Design 3 色阶及 16 色 ANSI 终端配色方案；管理封面与视频的映射注册表（`registry.json`）。 |
-| **Linux 后端 (`linux/`)** | **GJS (GNOME JS)** + **GTK 4.0** + **GStreamer 1.0** (`playbin` + `gtk4paintablesink`) | 通过 VA-API `video/x-raw(memory:DMABuf)` 实现硬件解码与 GPU 零拷贝渲染；使用 OpenGL GLSL 着色器完成 `ITU-R BT.709` $\rightarrow$ `sRGB` 传递函数转换；实现 180ms 透明度淡入淡出与 `Gst.SeekFlags.SEGMENT` 循环播放。 |
-| **Linux 桌面集成** | **Gio.Settings (`dconf`)** + **Gio.DBus** + **GnomeDesktop 4.0** + **GNOME Shell Extension (`St.Theme`)** | 监听系统「设置 $\rightarrow$ 外观」壁纸变化；利用 `DesktopThumbnailFactory` 将 `▶ LIVE` 角标渲染至缩略图缓存；监听全屏窗口、锁屏（`ScreenSaver`）、息屏（`Mutter.DisplayConfig`）与省电模式（`PowerProfiles`）；同步顶栏 CSS、Libadwaita 亚克力与 Ptyxis 终端配色。 |
-| **Windows 后端 (`windows/`)** | **Python `ctypes` (Win32 API)** + **mpv / FFmpeg** + **`winreg`** | 调用 `user32.dll` 向 `Progman` 发送 `0x052C` 消息定位 `WorkerW` 句柄，将硬件加速视频窗口挂载于桌面图标层（`SHELLDLL_DefView`）下方；通过 `SHQueryUserNotificationState` 与 `GetSystemPowerStatus` 检测全屏游戏/锁屏/节电状态；写入注册表同步 Windows DWM 强调色与 Windows Terminal 配色。 |
+| **跨平台核心层**<br/>`core/` | ![Python](https://img.shields.io/badge/Python_3-3776AB?style=flat-square&logo=python&logoColor=white) ![Pillow](https://img.shields.io/badge/Pillow_(PIL)-306998?style=flat-square&logo=python&logoColor=white) ![M3 Monet](https://img.shields.io/badge/HSL_Tonal_Palette-6750A4?style=flat-square&logo=materialdesign&logoColor=white) | 基于 HSL 色彩空间提取壁纸主色相与饱和度，计算深色（Dark）/ 浅色（Light）双模 Material Design 3 色阶及 16 色 ANSI 终端配色；维护封面与视频映射注册表（`registry.json`）。 |
+| **Linux 渲染后端**<br/>`linux/` | ![GJS](https://img.shields.io/badge/GJS-F7DF1E?style=flat-square&logo=javascript&logoColor=black) ![GTK4](https://img.shields.io/badge/GTK_4.0-4A86CF?style=flat-square&logo=gtk&logoColor=white) ![GStreamer](https://img.shields.io/badge/GStreamer_1.0-E53935?style=flat-square&logo=gstreamer&logoColor=white) ![VA-API](https://img.shields.io/badge/VA--API_DMABuf-00897B?style=flat-square) ![GLSL](https://img.shields.io/badge/BT.709_→_sRGB_GLSL-5586A4?style=flat-square&logo=opengl&logoColor=white) | 通过 `playbin` + `gtk4paintablesink` 实现硬件解码与 GPU 零拷贝渲染；使用 OpenGL GLSL 片元着色器完成 `BT.709` $\rightarrow$ `sRGB` 传递函数转换；实现 180ms 淡入淡出过渡与 `Gst.SeekFlags.SEGMENT` 循环播放。 |
+| **Linux 桌面集成**<br/>`linux/` | ![GNOME](https://img.shields.io/badge/GNOME_45--50-241F31?style=flat-square&logo=gnome&logoColor=white) ![D-Bus](https://img.shields.io/badge/Gio.DBus-E95420?style=flat-square) ![GSettings](https://img.shields.io/badge/GSettings_(dconf)-77216F?style=flat-square) ![Libadwaita](https://img.shields.io/badge/Libadwaita_CSS-3584E4?style=flat-square&logo=gtk&logoColor=white) ![systemd](https://img.shields.io/badge/systemd-20232A?style=flat-square&logo=systemd&logoColor=white) | 监听系统「设置 $\rightarrow$ 外观」壁纸变化；利用 `DesktopThumbnailFactory` 将 `▶ LIVE` 角标渲染至缩略图缓存；监听全屏窗口、锁屏、息屏与省电模式；同步顶栏 CSS、Libadwaita 亚克力与 Ptyxis 终端配色。 |
+| **Windows 后端**<br/>`windows/` | ![Win32](https://img.shields.io/badge/Win32_WorkerW-0078D6?style=flat-square&logo=windows11&logoColor=white) ![DWM](https://img.shields.io/badge/Windows_DWM-005FB8?style=flat-square&logo=windows&logoColor=white) ![ctypes](https://img.shields.io/badge/Python_ctypes-3776AB?style=flat-square&logo=python&logoColor=white) ![mpv](https://img.shields.io/badge/mpv_IPC-67216F?style=flat-square&logo=mpv&logoColor=white) ![FFmpeg](https://img.shields.io/badge/FFmpeg-007808?style=flat-square&logo=ffmpeg&logoColor=white) | 调用 `user32.dll` 向 `Progman` 发送 `0x052C` 消息定位 `WorkerW` 句柄，将硬件加速视频窗口挂载于桌面图标层下方；通过 `SHQueryUserNotificationState` 检测全屏游戏/锁屏/节电状态；同步 Windows DWM 强调色与 Windows Terminal 配色。 |
 
 ---
 
