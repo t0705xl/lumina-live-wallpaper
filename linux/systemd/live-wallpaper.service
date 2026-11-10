@@ -1,0 +1,15 @@
+[Unit]
+Description=GNOME Hardware-Accelerated Live Video Wallpaper Daemon
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+Environment=GDK_BACKEND=x11
+Environment=DISPLAY=:0
+ExecStart=/usr/bin/gjs %h/.local/bin/live-wallpaper-daemon
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

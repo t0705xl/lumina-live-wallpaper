@@ -1,0 +1,384 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BG_DIR="$HOME/.local/share/backgrounds"
+LIVE_DIR="$HOME/.local/share/live-wallpaper"
+COVERS_DIR="$LIVE_DIR/covers"
+CONF_DIR="$HOME/.config/live-wallpaper"
+REGISTRY_JSON="$CONF_DIR/registry.json"
+XML_DIR="$HOME/.local/share/gnome-background-properties"
+XML_FILE="$XML_DIR/live-wallpaper.xml"
+
+mkdir -p "$BG_DIR" "$COVERS_DIR" "$CONF_DIR" "$XML_DIR"
+
+usage() {
+    cat << 'EOF'
+用法:
+  set-live-wallpaper <视频文件.mp4>     设置并注册新的 30fps 动态视频壁纸（同时在系统设置「外观」中生成带 ▶ LIVE 角标的壁纸项）
+  set-live-wallpaper <静态图片.jpg/png> 切换到指定的静态壁纸
+  set-live-wallpaper --live             切换回当前的动态视频壁纸
+  set-live-wallpaper --static           切换回系统设置中的静态壁纸
+  set-live-wallpaper --refresh-badges   为所有已注册的动态壁纸重新生成「▶ LIVE」缩略图角标并同步壁纸库 XML
+EOF
+}
+
+sync_thumbnails_and_xml() {
+    python3 - "$REGISTRY_JSON" "$XML_FILE" "$BG_DIR" "$COVERS_DIR" << 'PYEOF'
+import sys
+import os
+import json
+import xml.sax.saxutils as saxutils
+import tempfile
+import gi
+gi.require_version("GnomeDesktop", "4.0")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GnomeDesktop, Gio, GdkPixbuf
+from PIL import Image, ImageDraw, ImageFont
+
+registry_path, xml_path, bg_dir, covers_dir = sys.argv[1:5]
+
+if not os.path.exists(registry_path):
+    sys.exit(0)
+
+try:
+    with open(registry_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as e:
+    print(f"读取 registry.json 失败: {e}", file=sys.stderr)
+    sys.exit(1)
+
+wallpapers = data.get("wallpapers", {})
+
+def add_live_badge_to_image(pil_img):
+    """Render an anti-aliased M3 '▶ LIVE' capsule pill at bottom-center safe zone."""
+    base = pil_img.convert("RGBA")
+    w, h = base.size
+
+    # 4x supersampled overlay for crisp vector-grade edges
+    scale = 4
+    ow, oh = w * scale, h * scale
+    overlay = Image.new("RGBA", (ow, oh), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    pill_h = max(22, int(h * 0.165)) * scale
+    pill_w = int(pill_h * 2.85)
+    margin_bottom = max(8, int(h * 0.075)) * scale
+
+    x0 = (ow - pill_w) // 2
+    y0 = oh - margin_bottom - pill_h
+    x1 = x0 + pill_w
+    y1 = y0 + pill_h
+    radius = pill_h // 2
+
+    # Soft outer shadow
+    shadow_offset = max(2, scale)
+    draw.rounded_rectangle(
+        [x0, y0 + shadow_offset, x1, y1 + shadow_offset],
+        radius=radius,
+        fill=(0, 0, 0, 110),
+    )
+
+    # Dark frosted capsule background with subtle light border
+    draw.rounded_rectangle(
+        [x0, y0, x1, y1],
+        radius=radius,
+        fill=(14, 18, 26, 215),
+        outline=(255, 255, 255, 95),
+        width=max(2, int(scale * 0.9)),
+    )
+
+    # Play triangle icon on the left side of the capsule
+    cy = (y0 + y1) // 2
+    tri_h = int(pill_h * 0.44)
+    tri_w = int(tri_h * 0.88)
+    tri_x = x0 + int(pill_w * 0.20)
+    triangle = [
+        (tri_x, cy - tri_h // 2),
+        (tri_x, cy + tri_h // 2),
+        (tri_x + tri_w, cy),
+    ]
+    draw.polygon(triangle, fill=(120, 220, 255, 255))
+
+    # 'LIVE' bold label on the right side of the capsule
+    font_size = int(pill_h * 0.52)
+    font = None
+    for font_candidate in [
+        "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf",
+        "/usr/share/fonts/google-droid-sans-fonts/DroidSans-Bold.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Bold.ttf",
+    ]:
+        if os.path.exists(font_candidate):
+            try:
+                font = ImageFont.truetype(font_candidate, font_size)
+                break
+            except Exception:
+                pass
+    if font is None:
+        font = ImageFont.load_default()
+
+    text = "LIVE"
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+    tx = tri_x + tri_w + int(pill_w * 0.09)
+    ty = cy - th // 2 - bbox[1]
+    draw.text((tx, ty), text, font=font, fill=(255, 255, 255, 250))
+
+    overlay_down = overlay.resize((w, h), Image.Resampling.LANCZOS)
+    combined = Image.alpha_composite(base, overlay_down).convert("RGB")
+    return combined
+
+# Collect unique valid cover paths
+cover_to_video = {}
+for k, v in wallpapers.items():
+    if os.path.isabs(k) and os.path.isfile(k) and os.path.isfile(v):
+        cover_to_video[k] = v
+
+# Generate badged thumbnails for both LARGE and XLARGE sizes
+for thumb_size in (
+    GnomeDesktop.DesktopThumbnailSize.LARGE,
+    GnomeDesktop.DesktopThumbnailSize.XLARGE,
+):
+    factory = GnomeDesktop.DesktopThumbnailFactory.new(thumb_size)
+    for cover_path in sorted(cover_to_video.keys()):
+        try:
+            gf = Gio.File.new_for_path(cover_path)
+            uri = gf.get_uri()
+            mtime = int(os.path.getmtime(cover_path))
+            pixbuf = factory.generate_thumbnail(uri, "image/png", None)
+            if not pixbuf:
+                continue
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_name = tmp.name
+            try:
+                pixbuf.savev(tmp_name, "png", [], [])
+                with Image.open(tmp_name) as pim:
+                    badged = add_live_badge_to_image(pim)
+                    badged.save(tmp_name, format="PNG")
+                badged_pixbuf = GdkPixbuf.Pixbuf.new_from_file(tmp_name)
+                factory.save_thumbnail(badged_pixbuf, uri, mtime)
+            finally:
+                if os.path.exists(tmp_name):
+                    os.remove(tmp_name)
+        except Exception as e:
+            print(f"生成角标缩略图失败 ({cover_path}): {e}", file=sys.stderr)
+
+# Sync live-wallpaper.xml with all covers in covers_dir
+xml_entries = []
+seen_videos = set()
+for cover_path, video_path in sorted(cover_to_video.items()):
+    if os.path.dirname(cover_path) != covers_dir:
+        continue
+    if video_path in seen_videos:
+        continue
+    seen_videos.add(video_path)
+    stem = os.path.basename(cover_path)
+    for suffix in ("-live-cover.png", "-cover.png", "-cover.jpg"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    esc_name = saxutils.escape(f"动态视频壁纸 ({stem})")
+    esc_file = saxutils.escape(cover_path)
+    xml_entries.append(f"""    <wallpaper deleted="false">
+        <name>{esc_name}</name>
+        <filename>{esc_file}</filename>
+        <filename-dark>{esc_file}</filename-dark>
+        <options>zoom</options>
+        <shade_type>solid</shade_type>
+        <pcolor>#080d14</pcolor>
+        <scolor>#080d14</scolor>
+    </wallpaper>""")
+
+if xml_entries:
+    xml_content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE wallpapers SYSTEM "gnome-wp-list.dtd">\n'
+        '<wallpapers>\n'
+        + "\n".join(xml_entries)
+        + '\n</wallpapers>\n'
+    )
+    os.makedirs(os.path.dirname(xml_path), exist_ok=True)
+    with open(xml_path, "w", encoding="utf-8") as f:
+        f.write(xml_content)
+PYEOF
+}
+
+if [ $# -lt 1 ]; then
+    usage
+    exit 1
+fi
+
+case "$1" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    --refresh-badges)
+        sync_thumbnails_and_xml
+        echo "已为所有动态壁纸更新「▶ LIVE」缩略图角标并同步系统壁纸列表 ($XML_FILE)"
+        exit 0
+        ;;
+    --live)
+        COVER_PNG="$(find "$BG_DIR" -maxdepth 1 -name '*-cover.png' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2-)"
+        if [ -z "${COVER_PNG:-}" ] || [ ! -f "$COVER_PNG" ]; then
+            COVER_PNG="$(find "$BG_DIR" -maxdepth 1 -name '*-cover.png' | head -n 1)"
+        fi
+        if [ -z "${COVER_PNG:-}" ] || [ ! -f "$COVER_PNG" ]; then
+            echo "错误: 未找到已注册的动态壁纸封面，请先运行: set-live-wallpaper <视频路径.mp4>"
+            exit 1
+        fi
+        gsettings set org.gnome.desktop.background picture-options 'zoom'
+        gsettings set org.gnome.desktop.background picture-uri "file://$COVER_PNG"
+        gsettings set org.gnome.desktop.background picture-uri-dark "file://$COVER_PNG"
+        gsettings set org.gnome.desktop.screensaver picture-uri "file://$COVER_PNG"
+        echo "已切换为动态视频壁纸: $COVER_PNG"
+        exit 0
+        ;;
+    --static)
+        STATIC_IMG="$(find "$BG_DIR" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) ! -name '*-cover.png' ! -name '*-cover.jpg' | sort | tail -n 1)"
+        if [ -z "${STATIC_IMG:-}" ]; then
+            STATIC_IMG="/usr/share/backgrounds/f44/default/f44-01-day.jxl"
+        fi
+        gsettings set org.gnome.desktop.background picture-options 'zoom'
+        gsettings set org.gnome.desktop.background picture-uri "file://$STATIC_IMG"
+        gsettings set org.gnome.desktop.background picture-uri-dark "file://$STATIC_IMG"
+        gsettings set org.gnome.desktop.screensaver picture-uri "file://$STATIC_IMG"
+        echo "已切换为静态壁纸: $STATIC_IMG"
+        exit 0
+        ;;
+esac
+
+INPUT_FILE="$(realpath "$1")"
+if [ ! -f "$INPUT_FILE" ]; then
+    echo "错误: 找不到文件: $INPUT_FILE"
+    exit 1
+fi
+
+MIME_TYPE="$(file --brief --mime-type "$INPUT_FILE")"
+
+# 如果传入的是静态图片，直接通过 GSettings 切换为静态壁纸
+if [[ "$MIME_TYPE" == image/* ]]; then
+    gsettings set org.gnome.desktop.background picture-options 'zoom'
+    gsettings set org.gnome.desktop.background picture-uri "file://$INPUT_FILE"
+    gsettings set org.gnome.desktop.background picture-uri-dark "file://$INPUT_FILE"
+    gsettings set org.gnome.desktop.screensaver picture-uri "file://$INPUT_FILE"
+    echo "已切换为静态壁纸: $INPUT_FILE"
+    exit 0
+fi
+
+BASENAME="$(basename "$INPUT_FILE")"
+STEM="${BASENAME%.*}"
+STEM="${STEM%-live}"
+
+TARGET_MP4="$LIVE_DIR/${STEM}-live.mp4"
+CURRENT_MP4="$LIVE_DIR/current-live-wallpaper.mp4"
+COVER_PNG="$BG_DIR/${STEM}-cover.png"
+BACKUP_COVER_PNG="$COVERS_DIR/${STEM}-cover.png"
+
+cp -f "$INPUT_FILE" "$TARGET_MP4"
+cp -f "$INPUT_FILE" "$CURRENT_MP4"
+
+# 使用与实时壁纸完全一致的 BT.709 -> sRGB 传递函数色彩空间转换提取无损 PNG 封面帧（若首帧为纯黑/纯白转场帧则自动智能截取关键帧）
+python3 - "$TARGET_MP4" "$COVER_PNG" "$BACKUP_COVER_PNG" "$REGISTRY_JSON" "$STEM" << 'PYEOF'
+import sys
+import os
+import json
+import shutil
+import gi
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst
+from PIL import Image, ImageStat
+
+Gst.init(None)
+video_path, cover_path, backup_cover_path, registry_path, stem = sys.argv[1:6]
+
+frag = """#version 100
+#ifdef GL_ES
+precision highp float;
+#endif
+varying vec2 v_texcoord;
+uniform sampler2D tex;
+
+float bt709_to_linear(float v) {
+    v = clamp(v, 0.0, 1.0);
+    return (v < 0.081) ? (v / 4.5) : pow((v + 0.099) / 1.099, 1.0 / 0.45);
+}
+
+float linear_to_srgb(float l) {
+    l = clamp(l, 0.0, 1.0);
+    return (l < 0.0031308) ? (l * 12.92) : (1.055 * pow(l, 1.0 / 2.4) - 0.055);
+}
+
+void main() {
+    vec4 rgba = texture2D(tex, v_texcoord);
+    vec3 lin = vec3(bt709_to_linear(rgba.r), bt709_to_linear(rgba.g), bt709_to_linear(rgba.b));
+    vec3 srgb = vec3(linear_to_srgb(lin.r), linear_to_srgb(lin.g), linear_to_srgb(lin.b));
+    gl_FragColor = vec4(srgb, rgba.a);
+}
+"""
+
+def extract_frame_at(seek_sec=0.0):
+    pipe_str = (
+        f'filesrc location="{video_path}" ! decodebin ! '
+        f'glupload ! glcolorconvert ! glshader name=sh ! '
+        f'gldownload ! videoconvert ! pngenc snapshot=true ! '
+        f'filesink location="{cover_path}"'
+    )
+    pipeline = Gst.parse_launch(pipe_str)
+    pipeline.get_by_name("sh").set_property("fragment", frag)
+    if seek_sec > 0.0:
+        pipeline.set_state(Gst.State.PAUSED)
+        pipeline.get_state(2 * Gst.SECOND)
+        pipeline.seek_simple(
+            Gst.Format.TIME,
+            Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+            int(seek_sec * Gst.SECOND),
+        )
+    pipeline.set_state(Gst.State.PLAYING)
+    bus = pipeline.get_bus()
+    bus.timed_pop_filtered(5 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    pipeline.set_state(Gst.State.NULL)
+
+extract_frame_at(0.0)
+
+# 若首帧为纯黑/纯白淡入帧（标准差过低），自动跳转至 1.0 秒处提取饱满关键帧
+if os.path.exists(cover_path):
+    try:
+        with Image.open(cover_path) as im:
+            stat = ImageStat.Stat(im.convert("RGB"))
+            avg_std = sum(stat.stddev) / 3.0
+        if avg_std < 6.0:
+            extract_frame_at(1.0)
+    except Exception:
+        pass
+
+shutil.copy2(cover_path, backup_cover_path)
+
+# Update registry.json
+data = {"wallpapers": {}, "defaultVideo": os.path.join(os.path.dirname(video_path), "current-live-wallpaper.mp4")}
+if os.path.exists(registry_path):
+    try:
+        with open(registry_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        pass
+
+wallpapers = data.setdefault("wallpapers", {})
+wallpapers[cover_path] = video_path
+wallpapers[backup_cover_path] = video_path
+wallpapers[os.path.basename(cover_path)] = video_path
+data["defaultVideo"] = os.path.join(os.path.dirname(video_path), "current-live-wallpaper.mp4")
+
+with open(registry_path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+PYEOF
+
+sync_thumbnails_and_xml
+
+gsettings set org.gnome.desktop.background picture-options 'zoom'
+gsettings set org.gnome.desktop.background picture-uri "file://$COVER_PNG"
+gsettings set org.gnome.desktop.background picture-uri-dark "file://$COVER_PNG"
+gsettings set org.gnome.desktop.screensaver picture-uri "file://$COVER_PNG"
+
+echo "已成功设置 30fps 硬件加速动态壁纸（支持在「系统设置 -> 外观」中直接与静态壁纸自由切换）: $INPUT_FILE"

@@ -1,0 +1,613 @@
+#!/usr/bin/env gjs
+
+imports.gi.versions.Gtk = '4.0';
+imports.gi.versions.Gdk = '4.0';
+imports.gi.versions.GdkX11 = '4.0';
+
+const Gtk = imports.gi.Gtk;
+const Gdk = imports.gi.Gdk;
+const GdkX11 = imports.gi.GdkX11;
+const Gio = imports.gi.Gio;
+const GLib = imports.gi.GLib;
+const Gst = imports.gi.Gst;
+const Cairo = imports.gi.cairo;
+const ByteArray = imports.byteArray;
+
+Gtk.init();
+Gst.init(null);
+
+const homeDir = GLib.get_home_dir();
+const defaultVideoPath = GLib.build_filenamev([
+    homeDir,
+    '.local',
+    'share',
+    'live-wallpaper',
+    'current-live-wallpaper.mp4',
+]);
+const registryPath = GLib.build_filenamev([
+    homeDir,
+    '.config',
+    'live-wallpaper',
+    'registry.json',
+]);
+const runtimeOcclusionPath = GLib.build_filenamev([
+    GLib.get_user_runtime_dir(),
+    'live-wallpaper-occluded',
+]);
+
+function getPrimaryGeometry() {
+    const disp = Gdk.Display.get_default();
+    const monitors = disp ? disp.get_monitors() : null;
+    if (monitors && monitors.get_n_items() > 0) {
+        const mon = monitors.get_item(0);
+        return mon.get_geometry();
+    }
+    return {x: 0, y: 0, width: 1368, height: 912};
+}
+
+let geom = getPrimaryGeometry();
+
+// Hardware-accelerated zero-copy DMA-BUF sink (same engine & GdkCicpParams BT.709->sRGB color pipeline as GNOME Showtime)
+const sink = Gst.ElementFactory.make('gtk4paintablesink', 'sink');
+sink.set_property('sync', true);
+
+const pipeline = Gst.ElementFactory.make('playbin', 'player');
+pipeline.set_property('video-sink', sink);
+// GstPlayFlags: VIDEO (1 << 0) | NATIVE_VIDEO (1 << 6) = 65 (no audio/subtitles, direct VA-API DMA-BUF zero-copy)
+pipeline.set_property('flags', (1 << 0) | (1 << 6));
+
+const disp = Gdk.Display.get_default();
+const cssProvider = new Gtk.CssProvider();
+cssProvider.load_from_string(`
+    window, window.background, picture {
+        background-color: transparent;
+        background-image: none;
+        box-shadow: none;
+        border: none;
+    }
+`);
+if (disp) {
+    Gtk.StyleContext.add_provider_for_display(
+        disp,
+        cssProvider,
+        Gtk.STYLE_PROVIDER_PRIORITY_USER + 100
+    );
+}
+
+const emptyBytes = GLib.Bytes.new(new Uint8Array([0, 0, 0, 0]));
+const emptyPaintable = Gdk.MemoryTexture.new(1, 1, Gdk.MemoryFormat.B8G8R8A8, emptyBytes, 4);
+
+const paintable = sink.get_property('paintable');
+const picture = new Gtk.Picture({
+    paintable: emptyPaintable,
+    content_fit: Gtk.ContentFit.COVER,
+    hexpand: true,
+    vexpand: true,
+    can_target: false,
+    focusable: false,
+});
+
+const win = new Gtk.Window({
+    title: 'GNOME Live Wallpaper',
+    decorated: false,
+    can_target: false,
+    focusable: false,
+    focus_on_click: false,
+});
+win.set_default_size(geom.width, geom.height);
+win.set_size_request(geom.width, geom.height);
+win.set_child(picture);
+
+let winXid = 0;
+let isLiveActive = false;
+let fadeTimerId = 0;
+let pendingPreroll = false;
+let segmentArmed = false;
+
+function cancelFadeAnimation() {
+    if (fadeTimerId !== 0) {
+        GLib.source_remove(fadeTimerId);
+        fadeTimerId = 0;
+    }
+}
+
+function setWindowTransparent(transparent) {
+    const surf = win.get_surface();
+    if (surf && typeof surf.get_xid === 'function') {
+        winXid = surf.get_xid();
+    }
+    if (!winXid) {
+        return;
+    }
+    if (transparent) {
+        GLib.spawn_command_line_sync(
+            `xprop -id ${winXid} -f _NET_WM_WINDOW_OPACITY 32c -set _NET_WM_WINDOW_OPACITY 0`
+        );
+    } else {
+        GLib.spawn_command_line_sync(
+            `xprop -id ${winXid} -remove _NET_WM_WINDOW_OPACITY`
+        );
+    }
+}
+
+function startFadeIn() {
+    cancelFadeAnimation();
+    setWindowTransparent(false);
+    if (picture.get_paintable() !== paintable) {
+        picture.set_paintable(paintable);
+    }
+    const surf = win.get_surface();
+    if (surf) {
+        surf.set_input_region(new Cairo.Region());
+    }
+
+    const totalSteps = 9;
+    let step = 1;
+    picture.set_opacity(0.08);
+    picture.queue_draw();
+
+    fadeTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 20, () => {
+        if (!isLiveActive) {
+            fadeTimerId = 0;
+            return GLib.SOURCE_REMOVE;
+        }
+        step += 1;
+        if (step >= totalSteps) {
+            picture.set_opacity(1.0);
+            picture.queue_draw();
+            fadeTimerId = 0;
+            return GLib.SOURCE_REMOVE;
+        }
+        // Cubic ease-out curve for silky visual appearance
+        const t = step / totalSteps;
+        const eased = 1.0 - Math.pow(1.0 - t, 3);
+        picture.set_opacity(Math.max(0.08, Math.min(1.0, eased)));
+        picture.queue_draw();
+        return GLib.SOURCE_CONTINUE;
+    });
+}
+
+function startFadeOutToStatic() {
+    cancelFadeAnimation();
+
+    // If already showing emptyPaintable, immediately finalize static state
+    if (picture.get_paintable() === emptyPaintable) {
+        picture.set_opacity(1.0);
+        picture.queue_draw();
+        win.queue_draw();
+        setWindowTransparent(true);
+        pipeline.set_state(Gst.State.NULL);
+        return;
+    }
+
+    // Pause on the current video frame so it can smoothly dissolve over the static wallpaper
+    pipeline.set_state(Gst.State.PAUSED);
+
+    const totalSteps = 8;
+    let step = 0;
+
+    fadeTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 20, () => {
+        if (isLiveActive) {
+            fadeTimerId = 0;
+            return GLib.SOURCE_REMOVE;
+        }
+        step += 1;
+        if (step >= totalSteps) {
+            picture.set_paintable(emptyPaintable);
+            picture.set_opacity(1.0);
+            picture.queue_draw();
+            win.queue_draw();
+            setWindowTransparent(true);
+            pipeline.set_state(Gst.State.NULL);
+            fadeTimerId = 0;
+            return GLib.SOURCE_REMOVE;
+        }
+        const t = step / totalSteps;
+        const alpha = Math.max(0.06, 1.0 - t * 0.92);
+        picture.set_opacity(alpha);
+        picture.queue_draw();
+        return GLib.SOURCE_CONTINUE;
+    });
+}
+
+function applyDesktopWindowHints() {
+    const surf = win.get_surface();
+    if (!surf) {
+        return;
+    }
+    if (typeof surf.get_xid === 'function') {
+        winXid = surf.get_xid();
+        GLib.spawn_command_line_sync(
+            `xprop -id ${winXid} -f _NET_WM_WINDOW_TYPE 32a -set _NET_WM_WINDOW_TYPE _NET_WM_WINDOW_TYPE_DESKTOP`
+        );
+        GLib.spawn_command_line_sync(
+            `xprop -id ${winXid} -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_BELOW,_NET_WM_STATE_STICKY,_NET_WM_STATE_SKIP_TASKBAR,_NET_WM_STATE_SKIP_PAGER`
+        );
+        setWindowTransparent(!isLiveActive);
+    }
+    surf.set_input_region(new Cairo.Region());
+}
+
+win.connect('realize', () => {
+    applyDesktopWindowHints();
+});
+
+win.connect('map', () => {
+    GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+        applyDesktopWindowHints();
+        return GLib.SOURCE_REMOVE;
+    });
+});
+
+win.set_visible(true);
+
+const monitors = disp ? disp.get_monitors() : null;
+if (monitors) {
+    monitors.connect('items-changed', () => {
+        geom = getPrimaryGeometry();
+        win.set_default_size(geom.width, geom.height);
+        win.set_size_request(geom.width, geom.height);
+    });
+}
+
+let currentVideoPath = '';
+let isScreenLocked = false;
+let isDisplayOff = false;
+let isOccluded = false;
+let isPowerSaver = false;
+let errorRetries = 0;
+
+if (GLib.file_test(runtimeOcclusionPath, GLib.FileTest.EXISTS)) {
+    try {
+        const [ok, bytes] = GLib.file_get_contents(runtimeOcclusionPath);
+        if (ok) {
+            isOccluded = ByteArray.toString(bytes).trim() === '1';
+        }
+    } catch (_e) {
+        // Ignore read error
+    }
+}
+
+function shouldPausePlayback() {
+    return isScreenLocked || isDisplayOff || isOccluded || isPowerSaver;
+}
+
+function updatePlaybackState(reason) {
+    if (!isLiveActive) {
+        return;
+    }
+    const paused = shouldPausePlayback();
+    if (reason) {
+        print(`[LiveWallpaper] ${paused ? 'Pausing' : 'Resuming'} playback (${reason})`);
+    }
+    pipeline.set_state(paused ? Gst.State.PAUSED : Gst.State.PLAYING);
+}
+
+const bus = pipeline.get_bus();
+bus.add_signal_watch();
+
+bus.connect('message::async-done', () => {
+    if (!isLiveActive) {
+        return;
+    }
+    errorRetries = 0;
+
+    if (!segmentArmed) {
+        segmentArmed = true;
+        // Arm non-flushing segment loop for zero-hiccup looping at end of stream
+        pipeline.seek(
+            1.0,
+            Gst.Format.TIME,
+            Gst.SeekFlags.FLUSH | Gst.SeekFlags.SEGMENT,
+            Gst.SeekType.SET,
+            0,
+            Gst.SeekType.NONE,
+            -1
+        );
+        return;
+    }
+
+    if (pendingPreroll) {
+        pendingPreroll = false;
+        startFadeIn();
+        if (shouldPausePlayback()) {
+            pipeline.set_state(Gst.State.PAUSED);
+        }
+    }
+});
+
+bus.connect('message::segment-done', () => {
+    if (isLiveActive) {
+        const ok = pipeline.seek(
+            1.0,
+            Gst.Format.TIME,
+            Gst.SeekFlags.SEGMENT,
+            Gst.SeekType.SET,
+            0,
+            Gst.SeekType.NONE,
+            -1
+        );
+        if (!ok) {
+            pipeline.seek_simple(
+                Gst.Format.TIME,
+                Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+                0
+            );
+        }
+    }
+});
+
+bus.connect('message::eos', () => {
+    if (isLiveActive) {
+        pipeline.seek(
+            1.0,
+            Gst.Format.TIME,
+            Gst.SeekFlags.FLUSH | Gst.SeekFlags.SEGMENT,
+            Gst.SeekType.SET,
+            0,
+            Gst.SeekType.NONE,
+            -1
+        );
+    }
+});
+
+bus.connect('message::error', (_bus, msg) => {
+    const [err, dbg] = msg.parse_error();
+    printerr(`[LiveWallpaper] GStreamer error: ${err.message} (${dbg || 'no debug'})\n`);
+    pipeline.set_state(Gst.State.NULL);
+    errorRetries += 1;
+    if (errorRetries <= 3 && isLiveActive && !shouldPausePlayback() && currentVideoPath) {
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+            if (isLiveActive && !shouldPausePlayback() && currentVideoPath) {
+                pendingPreroll = true;
+                segmentArmed = false;
+                pipeline.set_property('uri', GLib.filename_to_uri(currentVideoPath, null));
+                pipeline.set_state(Gst.State.PLAYING);
+            }
+            return GLib.SOURCE_REMOVE;
+        });
+    } else if (errorRetries > 3) {
+        printerr('[LiveWallpaper] Exceeded max error retries, halting playback until next wallpaper change.\n');
+    }
+});
+
+const bgSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.background'});
+const ifaceSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
+
+function uriToPath(uri) {
+    if (!uri || uri === 'none') {
+        return null;
+    }
+    if (uri.startsWith('file://')) {
+        try {
+            const [path] = GLib.filename_from_uri(uri);
+            return path;
+        } catch (_e) {
+            return decodeURIComponent(uri.replace(/^file:\/\//, ''));
+        }
+    }
+    return uri;
+}
+
+function getActiveWallpaperPath() {
+    const scheme = ifaceSettings.get_string('color-scheme');
+    let uri = '';
+    if (scheme === 'prefer-dark') {
+        uri = bgSettings.get_string('picture-uri-dark');
+        if (!uri || uri === 'none') {
+            uri = bgSettings.get_string('picture-uri');
+        }
+    } else {
+        uri = bgSettings.get_string('picture-uri');
+        if (!uri || uri == 'none') {
+            uri = bgSettings.get_string('picture-uri-dark');
+        }
+    }
+    return uriToPath(uri);
+}
+
+function resolveLiveVideoForWallpaper(wallpaperPath) {
+    if (!wallpaperPath) {
+        return null;
+    }
+    const baseName = GLib.path_get_basename(wallpaperPath);
+
+    if (GLib.file_test(registryPath, GLib.FileTest.EXISTS)) {
+        try {
+            const [ok, bytes] = GLib.file_get_contents(registryPath);
+            if (ok) {
+                const data = JSON.parse(ByteArray.toString(bytes));
+                const map = data.wallpapers || {};
+                const candidate = map[wallpaperPath] || map[baseName];
+                if (candidate && GLib.file_test(candidate, GLib.FileTest.EXISTS)) {
+                    return candidate;
+                }
+            }
+        } catch (e) {
+            printerr(`[LiveWallpaper] Failed to parse registry.json: ${e}\n`);
+        }
+    }
+
+    if (/-(live-)?cover\.(png|jpe?g)$/i.test(baseName)) {
+        const stem = baseName.replace(/-(live-)?cover\.(png|jpe?g)$/i, '');
+        const candidate = GLib.build_filenamev([
+            homeDir,
+            '.local',
+            'share',
+            'live-wallpaper',
+            `${stem}-live.mp4`,
+        ]);
+        if (GLib.file_test(candidate, GLib.FileTest.EXISTS)) {
+            return candidate;
+        }
+        if (GLib.file_test(defaultVideoPath, GLib.FileTest.EXISTS)) {
+            return defaultVideoPath;
+        }
+    }
+
+    return null;
+}
+
+function syncWallpaperMode() {
+    const activeWallpaper = getActiveWallpaperPath();
+    const targetVideo = resolveLiveVideoForWallpaper(activeWallpaper);
+
+    if (targetVideo) {
+        errorRetries = 0;
+        const videoChanged = currentVideoPath !== targetVideo || !isLiveActive;
+        isLiveActive = true;
+
+        if (videoChanged) {
+            cancelFadeAnimation();
+            currentVideoPath = targetVideo;
+            pendingPreroll = true;
+            segmentArmed = false;
+            print(`[LiveWallpaper] Activating dynamic video wallpaper: ${currentVideoPath} (cover: ${activeWallpaper})`);
+
+            // Clear stale frame while prerolling so GNOME's native cover transition shines underneath
+            picture.set_paintable(emptyPaintable);
+            picture.set_opacity(1.0);
+            picture.queue_draw();
+
+            pipeline.set_state(Gst.State.NULL);
+            pipeline.set_property('uri', GLib.filename_to_uri(currentVideoPath, null));
+            // Start PLAYING briefly to preroll & arm segment seek; async-done will pause if occluded/locked
+            pipeline.set_state(Gst.State.PLAYING);
+        } else {
+            updatePlaybackState();
+        }
+    } else {
+        if (isLiveActive) {
+            print(`[LiveWallpaper] Switching to native static wallpaper: ${activeWallpaper}`);
+            isLiveActive = false;
+            pendingPreroll = false;
+            startFadeOutToStatic();
+        } else {
+            isLiveActive = false;
+            pendingPreroll = false;
+            picture.set_paintable(emptyPaintable);
+            picture.set_opacity(1.0);
+            picture.queue_draw();
+            win.queue_draw();
+            setWindowTransparent(true);
+            pipeline.set_state(Gst.State.NULL);
+        }
+    }
+}
+
+bgSettings.connect('changed::picture-uri', () => syncWallpaperMode());
+bgSettings.connect('changed::picture-uri-dark', () => syncWallpaperMode());
+ifaceSettings.connect('changed::color-scheme', () => syncWallpaperMode());
+
+// 1. Screen Lock Auto-Pause (org.gnome.ScreenSaver)
+try {
+    Gio.DBus.session.signal_subscribe(
+        'org.gnome.ScreenSaver',
+        'org.gnome.ScreenSaver',
+        'ActiveChanged',
+        '/org/gnome/ScreenSaver',
+        null,
+        Gio.DBusSignalFlags.NONE,
+        (_conn, _sender, _path, _iface, _signal, params) => {
+            const [locked] = params.deep_unpack();
+            if (isScreenLocked !== locked) {
+                isScreenLocked = locked;
+                updatePlaybackState(locked ? 'screen locked' : 'screen unlocked');
+            }
+        }
+    );
+} catch (_e) {
+    // Ignore if ScreenSaver D-Bus is unavailable
+}
+
+// 2. Display Blank / DPMS Sleep Auto-Pause (org.gnome.Mutter.DisplayConfig)
+try {
+    Gio.DBus.session.signal_subscribe(
+        'org.gnome.Mutter.DisplayConfig',
+        'org.freedesktop.DBus.Properties',
+        'PropertiesChanged',
+        '/org/gnome/Mutter/DisplayConfig',
+        null,
+        Gio.DBusSignalFlags.NONE,
+        (_conn, _sender, _path, _iface, _signal, params) => {
+            const [ifaceName, changed] = params.deep_unpack();
+            if (ifaceName === 'org.gnome.Mutter.DisplayConfig' && changed.PowerSaveMode !== undefined) {
+                const mode = changed.PowerSaveMode.deep_unpack();
+                const off = mode !== 0;
+                if (isDisplayOff !== off) {
+                    isDisplayOff = off;
+                    updatePlaybackState(off ? 'display sleep' : 'display wake');
+                }
+            }
+        }
+    );
+} catch (_e) {
+    // Ignore if DisplayConfig D-Bus is unavailable
+}
+
+// 3. Fullscreen Window Occlusion Auto-Pause (from GNOME Shell Extension)
+try {
+    Gio.DBus.session.signal_subscribe(
+        null,
+        'org.gnome.LiveWallpaper',
+        'OcclusionChanged',
+        '/org/gnome/LiveWallpaper',
+        null,
+        Gio.DBusSignalFlags.NONE,
+        (_conn, _sender, _path, _iface, _signal, params) => {
+            const [occluded] = params.deep_unpack();
+            if (isOccluded !== occluded) {
+                isOccluded = occluded;
+                updatePlaybackState(occluded ? 'fullscreen occluded' : 'desktop visible');
+            }
+        }
+    );
+} catch (_e) {
+    // Ignore if session D-Bus signal fails
+}
+
+// 4. System Power Saver Profile Auto-Pause (net.hadess.PowerProfiles)
+try {
+    const reply = Gio.DBus.system.call_sync(
+        'net.hadess.PowerProfiles',
+        '/net/hadess/PowerProfiles',
+        'org.freedesktop.DBus.Properties',
+        'Get',
+        new GLib.Variant('(ss)', ['net.hadess.PowerProfiles', 'ActiveProfile']),
+        null,
+        Gio.DBusCallFlags.NONE,
+        1000,
+        null
+    );
+    if (reply) {
+        const [val] = reply.deep_unpack();
+        isPowerSaver = val.deep_unpack() === 'power-saver';
+    }
+
+    Gio.DBus.system.signal_subscribe(
+        'net.hadess.PowerProfiles',
+        'org.freedesktop.DBus.Properties',
+        'PropertiesChanged',
+        '/net/hadess/PowerProfiles',
+        null,
+        Gio.DBusSignalFlags.NONE,
+        (_conn, _sender, _path, _iface, _signal, params) => {
+            const [ifaceName, changed] = params.deep_unpack();
+            if (ifaceName === 'net.hadess.PowerProfiles' && changed.ActiveProfile !== undefined) {
+                const profile = changed.ActiveProfile.deep_unpack();
+                const saver = profile === 'power-saver';
+                if (isPowerSaver !== saver) {
+                    isPowerSaver = saver;
+                    updatePlaybackState(saver ? 'power-saver enabled' : `power profile: ${profile}`);
+                }
+            }
+        }
+    );
+} catch (_e) {
+    // Ignore if PowerProfiles daemon is unavailable
+}
+
+syncWallpaperMode();
+
+const mainLoop = GLib.MainLoop.new(null, false);
+mainLoop.run();
