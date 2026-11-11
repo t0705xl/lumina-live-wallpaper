@@ -106,14 +106,6 @@ export default class QuickSettingsAvatarExtension extends Extension {
                 if (name !== 'stylesheet.css' && otherName !== 'stylesheet.css')
                     return;
 
-                if (
-                    eventType !== Gio.FileMonitorEvent.CHANGES_DONE_HINT &&
-                    eventType !== Gio.FileMonitorEvent.MOVED_IN &&
-                    eventType !== Gio.FileMonitorEvent.CREATED &&
-                    eventType !== Gio.FileMonitorEvent.CHANGED
-                )
-                    return;
-
                 if (this._cssReloadIdleId)
                     GLib.source_remove(this._cssReloadIdleId);
 

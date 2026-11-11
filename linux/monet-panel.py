@@ -45,12 +45,10 @@ GTK3_CSS_PATH = os.path.expanduser("~/.config/gtk-3.0/gtk.css")
 _last_applied_state = None
 
 def atomic_write(filepath, content):
-    """Write content to file atomically to prevent partial-read race conditions."""
+    """Write content to file directly to trigger inotify CHANGED / CHANGES_DONE_HINT events."""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    tmppath = f"{filepath}.tmp.{os.getpid()}"
-    with open(tmppath, 'w', encoding='utf-8') as f:
+    with open(filepath, 'w', encoding='utf-8') as f:
         f.write(content)
-    os.replace(tmppath, filepath)
 
 def hex_color(h, l, s):
     r, g, b = colorsys.hls_to_rgb(h % 1.0, max(0.0, min(1.0, l)), max(0.0, min(1.0, s)))
@@ -194,29 +192,23 @@ def extract_palette(image_path, scheme='prefer-dark'):
 
     if is_dark:
         # Dark Mode Ultra-Clear Crystal Liquid Glass (极清超晶流光液态玻璃)
-        # Ethereal, hyper-transparent glass sheen allowing dynamic wallpaper movement to shine cleanly through
-        glass_top = "rgba(255, 255, 255, 0.14)"
-        glass_bottom = f"rgba({rgb_str(h, 0.12, min(s * 0.75, 0.35))}, 0.16)"
-        bg_surface = f"rgba({rgb_str(h, 0.12, min(s * 0.75, 0.35))}, 0.15)"
+        # Uniform, hyper-transparent crystal glass with ZERO muddy gradient band across text content
+        glass_pill_bg = f"rgba({rgb_str(h, 0.15, min(s * 0.60, 0.30))}, 0.12)"
+        glass_pill_border = "rgba(255, 255, 255, 0.24)"
+        glass_pill_shadow = "0 3px 12px rgba(0, 0, 0, 0.22)"
 
         # Maximized panel (#panel.solid) ultra-clean smoked crystal
-        panel_solid_top = f"rgba({rgb_str(h, 0.10, min(s * 0.50, 0.22))}, 0.52)"
-        panel_solid_bot = f"rgba({rgb_str(h, 0.07, min(s * 0.45, 0.18))}, 0.40)"
-
-        # Specular razor-thin rim border and pure outer depth shadow (NO cloudy inner haze)
-        glass_border = "rgba(255, 255, 255, 0.20)"
-        glass_outer_shadow = "0 3px 12px rgba(0, 0, 0, 0.24)"
+        panel_solid_top = f"rgba({rgb_str(h, 0.10, min(s * 0.50, 0.22))}, 0.48)"
+        panel_solid_bot = f"rgba({rgb_str(h, 0.07, min(s * 0.45, 0.18))}, 0.36)"
 
         # Hover & Active fluid states
-        hover_top = "rgba(255, 255, 255, 0.26)"
-        hover_bot = f"rgba({rgb_str(h, 0.22, min(s * 0.85, 0.45))}, 0.22)"
-        hover_border = "rgba(255, 255, 255, 0.45)"
-        hover_shadow = f"0 4px 18px rgba({rgb_str(h, 0.65, min(s, 0.60))}, 0.30)"
+        hover_pill_bg = "rgba(255, 255, 255, 0.20)"
+        hover_pill_border = "rgba(255, 255, 255, 0.48)"
+        hover_pill_shadow = "0 4px 18px rgba(0, 0, 0, 0.32)"
 
-        active_top = f"rgba({rgb_str(h, 0.38, min(s * 1.10, 0.70))}, 0.45)"
-        active_bot = f"rgba({rgb_str(h, 0.22, min(s * 1.00, 0.60))}, 0.30)"
-        active_border = "rgba(255, 255, 255, 0.65)"
-        active_shadow = f"0 4px 20px rgba({rgb_str(h, 0.75, min(s, 0.70))}, 0.40)"
+        active_pill_bg = f"rgba({rgb_str(h, 0.70, min(s * 1.10, 0.75))}, 0.28)"
+        active_pill_border = f"rgba({rgb_str(h, 0.85, min(s * 1.10, 0.75))}, 0.65)"
+        active_pill_shadow = f"0 0 18px rgba({rgb_str(h, 0.75, min(s, 0.70))}, 0.38)"
 
         # Popup menu & Quick Settings crystal glass
         popup_top = f"rgba({rgb_str(h, 0.14, min(s * 0.65, 0.35))}, 0.84)"
@@ -224,6 +216,7 @@ def extract_palette(image_path, scheme='prefer-dark'):
         card_glass_top = "rgba(255, 255, 255, 0.12)"
         card_glass_bot = f"rgba({rgb_str(h, 0.14, min(s * 0.50, 0.25))}, 0.18)"
 
+        bg_surface = glass_pill_bg
         bg_solid = popup_top
         bg_overview = f"rgba({rgb_str(h, 0.08, min(s * 0.5, 0.20))}, 0.32)"
 
@@ -232,31 +225,27 @@ def extract_palette(image_path, scheme='prefer-dark'):
         hover_text = "#FFFFFF"
     else:
         # Light Mode Ultra-Clear Crystal Liquid Glass (极清晶润微光玻璃)
-        glass_top = "rgba(255, 255, 255, 0.52)"
-        glass_bottom = f"rgba({rgb_str(h, 0.94, min(s * 0.60, 0.30))}, 0.26)"
-        bg_surface = f"rgba({rgb_str(h, 0.95, min(s * 0.50, 0.25))}, 0.32)"
+        glass_pill_bg = "rgba(255, 255, 255, 0.40)"
+        glass_pill_border = "rgba(255, 255, 255, 0.75)"
+        glass_pill_shadow = "0 3px 10px rgba(0, 0, 0, 0.08)"
 
         panel_solid_top = f"rgba({rgb_str(h, 0.96, min(s * 0.40, 0.22))}, 0.75)"
         panel_solid_bot = f"rgba({rgb_str(h, 0.90, min(s * 0.50, 0.28))}, 0.62)"
 
-        glass_border = "rgba(255, 255, 255, 0.65)"
-        glass_outer_shadow = "0 3px 12px rgba(0, 0, 0, 0.08)"
+        hover_pill_bg = "rgba(255, 255, 255, 0.60)"
+        hover_pill_border = "rgba(255, 255, 255, 0.95)"
+        hover_pill_shadow = "0 4px 16px rgba(0, 0, 0, 0.14)"
 
-        hover_top = "rgba(255, 255, 255, 0.72)"
-        hover_bot = f"rgba({rgb_str(h, 0.90, min(s * 0.75, 0.45))}, 0.45)"
-        hover_border = "rgba(255, 255, 255, 0.90)"
-        hover_shadow = f"0 4px 16px rgba({rgb_str(h, 0.45, min(s, 0.60))}, 0.22)"
-
-        active_top = f"rgba({rgb_str(h, 0.88, min(s * 1.0, 0.65))}, 0.65)"
-        active_bot = f"rgba({rgb_str(h, 0.78, min(s * 1.0, 0.55))}, 0.50)"
-        active_border = "rgba(255, 255, 255, 0.95)"
-        active_shadow = f"0 4px 18px rgba({rgb_str(h, 0.45, min(s, 0.70))}, 0.30)"
+        active_pill_bg = f"rgba({rgb_str(h, 0.45, min(s * 1.10, 0.75))}, 0.35)"
+        active_pill_border = f"rgba({rgb_str(h, 0.45, min(s * 1.10, 0.75))}, 0.75)"
+        active_pill_shadow = f"0 0 16px rgba({rgb_str(h, 0.45, min(s, 0.70))}, 0.30)"
 
         popup_top = f"rgba({rgb_str(h, 0.98, min(s * 0.40, 0.25))}, 0.90)"
         popup_bot = f"rgba({rgb_str(h, 0.92, min(s * 0.50, 0.30))}, 0.82)"
         card_glass_top = "rgba(255, 255, 255, 0.75)"
         card_glass_bot = f"rgba({rgb_str(h, 0.94, min(s * 0.45, 0.25))}, 0.42)"
 
+        bg_surface = glass_pill_bg
         bg_solid = popup_top
         bg_overview = f"rgba({rgb_str(h, 0.96, min(s * 0.3, 0.20))}, 0.30)"
 
@@ -268,20 +257,17 @@ def extract_palette(image_path, scheme='prefer-dark'):
         'bg_surface': bg_surface,
         'bg_solid': bg_solid,
         'bg_overview': bg_overview,
-        'glass_top': glass_top,
-        'glass_bottom': glass_bottom,
+        'glass_pill_bg': glass_pill_bg,
+        'glass_pill_border': glass_pill_border,
+        'glass_pill_shadow': glass_pill_shadow,
         'panel_solid_top': panel_solid_top,
         'panel_solid_bot': panel_solid_bot,
-        'glass_border': glass_border,
-        'glass_outer_shadow': glass_outer_shadow,
-        'hover_top': hover_top,
-        'hover_bot': hover_bot,
-        'hover_border': hover_border,
-        'hover_shadow': hover_shadow,
-        'active_top': active_top,
-        'active_bot': active_bot,
-        'active_border': active_border,
-        'active_shadow': active_shadow,
+        'hover_pill_bg': hover_pill_bg,
+        'hover_pill_border': hover_pill_border,
+        'hover_pill_shadow': hover_pill_shadow,
+        'active_pill_bg': active_pill_bg,
+        'active_pill_border': active_pill_border,
+        'active_pill_shadow': active_pill_shadow,
         'popup_top': popup_top,
         'popup_bot': popup_bot,
         'card_glass_top': card_glass_top,
@@ -342,16 +328,14 @@ def generate_gnome_shell_css(palette):
 
 /* =========================================================
    2. Floating Crystal Liquid Glass Capsule Pills
-      (Pure clarity, zero milky fog in the middle, razor-thin specular rim)
+      (100% uniform clarity, zero muddy gradient band in the middle)
    ========================================================= */
 #panel .panel-button {{
-  background-color: {palette['bg_surface']} !important;
-  background-gradient-direction: vertical !important;
-  background-gradient-start: {palette['glass_top']} !important;
-  background-gradient-end: {palette['glass_bottom']} !important;
-  border: 1px solid {palette['glass_border']} !important;
+  background-color: {palette['glass_pill_bg']} !important;
+  background-gradient-direction: none !important;
+  border: 1px solid {palette['glass_pill_border']} !important;
   border-radius: 999px !important;
-  box-shadow: {palette['glass_outer_shadow']} !important;
+  box-shadow: {palette['glass_pill_shadow']} !important;
   color: {palette['text_color']} !important;
   text-shadow: none !important;
   icon-shadow: none !important;
@@ -365,12 +349,10 @@ def generate_gnome_shell_css(palette):
 /* 3. Pill Hover - Smooth Specular Luster Glow */
 #panel .panel-button:focus,
 #panel .panel-button:hover {{
-  background-color: {palette['hover_top']} !important;
-  background-gradient-direction: vertical !important;
-  background-gradient-start: {palette['hover_top']} !important;
-  background-gradient-end: {palette['hover_bot']} !important;
-  border-color: {palette['hover_border']} !important;
-  box-shadow: {palette['hover_shadow']} !important;
+  background-color: {palette['hover_pill_bg']} !important;
+  background-gradient-direction: none !important;
+  border-color: {palette['hover_pill_border']} !important;
+  box-shadow: {palette['hover_pill_shadow']} !important;
   color: {hover_text} !important;
 }}
 
@@ -378,12 +360,10 @@ def generate_gnome_shell_css(palette):
 #panel .panel-button:active,
 #panel .panel-button:checked,
 #panel .panel-button:overview {{
-  background-color: {palette['active_top']} !important;
-  background-gradient-direction: vertical !important;
-  background-gradient-start: {palette['active_top']} !important;
-  background-gradient-end: {palette['active_bot']} !important;
-  border-color: {palette['active_border']} !important;
-  box-shadow: {palette['active_shadow']} !important;
+  background-color: {palette['active_pill_bg']} !important;
+  background-gradient-direction: none !important;
+  border-color: {palette['active_pill_border']} !important;
+  box-shadow: {palette['active_pill_shadow']} !important;
   color: {hover_text} !important;
 }}
 
@@ -449,19 +429,17 @@ def generate_gnome_shell_css(palette):
 .world-clocks-button:hover,
 .weather-button:hover,
 .message:hover {{
-  background-gradient-start: {palette['hover_top']} !important;
-  background-gradient-end: {palette['hover_bot']} !important;
+  background-gradient-start: {palette['hover_pill_bg']} !important;
+  background-gradient-end: {palette['hover_pill_bg']} !important;
   border-color: rgba(255, 255, 255, 0.35) !important;
 }}
 
 .quick-toggle:checked,
 .quick-menu-toggle .quick-toggle:checked {{
-  background-color: {palette['active_top']} !important;
-  background-gradient-direction: vertical !important;
-  background-gradient-start: {palette['active_top']} !important;
-  background-gradient-end: {palette['active_bot']} !important;
-  border: 1px solid {palette['active_border']} !important;
-  box-shadow: {palette['active_shadow']} !important;
+  background-color: {palette['active_pill_bg']} !important;
+  background-gradient-direction: none !important;
+  border: 1px solid {palette['active_pill_border']} !important;
+  box-shadow: {palette['active_pill_shadow']} !important;
   color: {hover_text} !important;
 }}
 
