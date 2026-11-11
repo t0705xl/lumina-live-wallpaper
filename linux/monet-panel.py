@@ -193,78 +193,76 @@ def extract_palette(image_path, scheme='prefer-dark'):
         return f"{rr}, {gg}, {bb}"
 
     if is_dark:
-        # Dark Mode Liquid / Frosted Glass Palette
-        # Top of glass catches overhead light (brighter, slightly higher saturation & secondary hue blend)
-        glass_top_rgb = rgb_str(h, 0.24, min(s * 0.85, 0.52))
-        glass_bot_rgb = rgb_str(h, 0.12, min(s * 0.70, 0.38))
-        glass_top = f"rgba({glass_top_rgb}, 0.56)"
-        glass_bottom = f"rgba({glass_bot_rgb}, 0.38)"
+        # Dark Mode Ultra-Clear Crystal Liquid Glass (极清超晶流光液态玻璃)
+        # Ethereal, hyper-transparent glass sheen allowing dynamic wallpaper movement to shine cleanly through
+        glass_top = "rgba(255, 255, 255, 0.14)"
+        glass_bottom = f"rgba({rgb_str(h, 0.12, min(s * 0.75, 0.35))}, 0.16)"
+        bg_surface = f"rgba({rgb_str(h, 0.12, min(s * 0.75, 0.35))}, 0.15)"
 
-        # Maximized panel (#panel.solid) smoked glass gradient
-        panel_solid_top = f"rgba({rgb_str(h, 0.16, min(s * 0.65, 0.35))}, 0.76)"
-        panel_solid_bot = f"rgba({rgb_str(h, 0.10, min(s * 0.55, 0.28))}, 0.62)"
+        # Maximized panel (#panel.solid) ultra-clean smoked crystal
+        panel_solid_top = f"rgba({rgb_str(h, 0.10, min(s * 0.50, 0.22))}, 0.52)"
+        panel_solid_bot = f"rgba({rgb_str(h, 0.07, min(s * 0.45, 0.18))}, 0.40)"
 
-        # Specular rim & inner reflection highlight
-        rim_rgb = rgb_str(h, 0.82, min(s * 1.15, 0.78))
-        specular_rgb = rgb_str(h2, 0.92, min(s2 * 0.90, 0.65))
-        glass_border = f"rgba({rim_rgb}, 0.38)"
-        glass_inner_shadow = f"inset 0 1px 2px rgba({specular_rgb}, 0.34)"
+        # Specular razor-thin rim border and pure outer depth shadow (NO cloudy inner haze)
+        glass_border = "rgba(255, 255, 255, 0.20)"
+        glass_outer_shadow = "0 3px 12px rgba(0, 0, 0, 0.24)"
 
-        # Hover & Active glass states
-        hover_top = f"rgba({rgb_str(h, 0.36, min(s * 1.05, 0.68))}, 0.68)"
-        hover_bot = f"rgba({rgb_str(h2, 0.22, min(s2 * 0.95, 0.58))}, 0.48)"
-        active_top = f"rgba({rgb_str(h, 0.46, min(s * 1.15, 0.76))}, 0.78)"
-        active_bot = f"rgba({rgb_str(h2, 0.30, min(s2 * 1.05, 0.68))}, 0.58)"
+        # Hover & Active fluid states
+        hover_top = "rgba(255, 255, 255, 0.26)"
+        hover_bot = f"rgba({rgb_str(h, 0.22, min(s * 0.85, 0.45))}, 0.22)"
+        hover_border = "rgba(255, 255, 255, 0.45)"
+        hover_shadow = f"0 4px 18px rgba({rgb_str(h, 0.65, min(s, 0.60))}, 0.30)"
 
-        # Popup menu & Quick Settings frosted glass
-        popup_top = f"rgba({rgb_str(h, 0.19, min(s * 0.75, 0.42))}, 0.84)"
-        popup_bot = f"rgba({rgb_str(h, 0.11, min(s * 0.65, 0.32))}, 0.74)"
-        card_glass_top = f"rgba({rgb_str(h, 0.26, min(s * 0.70, 0.40))}, 0.42)"
-        card_glass_bot = f"rgba({rgb_str(h, 0.17, min(s * 0.60, 0.32))}, 0.28)"
+        active_top = f"rgba({rgb_str(h, 0.38, min(s * 1.10, 0.70))}, 0.45)"
+        active_bot = f"rgba({rgb_str(h, 0.22, min(s * 1.00, 0.60))}, 0.30)"
+        active_border = "rgba(255, 255, 255, 0.65)"
+        active_shadow = f"0 4px 20px rgba({rgb_str(h, 0.75, min(s, 0.70))}, 0.40)"
 
-        bg_surface = f"rgba({glass_top_rgb}, 0.54)"
+        # Popup menu & Quick Settings crystal glass
+        popup_top = f"rgba({rgb_str(h, 0.14, min(s * 0.65, 0.35))}, 0.84)"
+        popup_bot = f"rgba({rgb_str(h, 0.08, min(s * 0.55, 0.25))}, 0.76)"
+        card_glass_top = "rgba(255, 255, 255, 0.12)"
+        card_glass_bot = f"rgba({rgb_str(h, 0.14, min(s * 0.50, 0.25))}, 0.18)"
+
         bg_solid = popup_top
-        bg_overview = f"rgba({rgb_str(h, 0.10, min(s * 0.5, 0.25))}, 0.38)"
+        bg_overview = f"rgba({rgb_str(h, 0.08, min(s * 0.5, 0.20))}, 0.32)"
 
         accent_rgb = rgb_str(h, 0.78, min(s * 1.15, 0.76))
-        text_color = f"rgb({rgb_str(h, 0.96, min(s, 0.16))})"
-        hover_text = "#ffffff"
-        text_shadow = "0 1px 3px rgba(0, 0, 0, 0.48)"
-        icon_shadow = "0 1px 2px rgba(0, 0, 0, 0.42)"
+        text_color = "#FFFFFF"
+        hover_text = "#FFFFFF"
     else:
-        # Light Mode Crystal Pearl Glass Palette
-        glass_top_rgb = rgb_str(h, 0.98, min(s * 0.55, 0.35))
-        glass_bot_rgb = rgb_str(h, 0.90, min(s * 0.70, 0.42))
-        glass_top = f"rgba({glass_top_rgb}, 0.72)"
-        glass_bottom = f"rgba({glass_bot_rgb}, 0.52)"
+        # Light Mode Ultra-Clear Crystal Liquid Glass (极清晶润微光玻璃)
+        glass_top = "rgba(255, 255, 255, 0.52)"
+        glass_bottom = f"rgba({rgb_str(h, 0.94, min(s * 0.60, 0.30))}, 0.26)"
+        bg_surface = f"rgba({rgb_str(h, 0.95, min(s * 0.50, 0.25))}, 0.32)"
 
-        panel_solid_top = f"rgba({rgb_str(h, 0.96, min(s * 0.50, 0.30))}, 0.84)"
-        panel_solid_bot = f"rgba({rgb_str(h, 0.90, min(s * 0.60, 0.35))}, 0.72)"
+        panel_solid_top = f"rgba({rgb_str(h, 0.96, min(s * 0.40, 0.22))}, 0.75)"
+        panel_solid_bot = f"rgba({rgb_str(h, 0.90, min(s * 0.50, 0.28))}, 0.62)"
 
-        rim_rgb = rgb_str(h, 0.52, min(s * 1.10, 0.72))
-        specular_rgb = "255, 255, 255"
-        glass_border = f"rgba(255, 255, 255, 0.68)"
-        glass_inner_shadow = f"inset 0 1px 2px rgba(255, 255, 255, 0.80)"
+        glass_border = "rgba(255, 255, 255, 0.65)"
+        glass_outer_shadow = "0 3px 12px rgba(0, 0, 0, 0.08)"
 
-        hover_top = f"rgba({rgb_str(h, 0.92, min(s * 0.85, 0.55))}, 0.82)"
-        hover_bot = f"rgba({rgb_str(h2, 0.84, min(s2 * 0.85, 0.55))}, 0.66)"
-        active_top = f"rgba({rgb_str(h, 0.85, min(s * 1.0, 0.68))}, 0.88)"
-        active_bot = f"rgba({rgb_str(h2, 0.76, min(s2 * 0.95, 0.62))}, 0.74)"
+        hover_top = "rgba(255, 255, 255, 0.72)"
+        hover_bot = f"rgba({rgb_str(h, 0.90, min(s * 0.75, 0.45))}, 0.45)"
+        hover_border = "rgba(255, 255, 255, 0.90)"
+        hover_shadow = f"0 4px 16px rgba({rgb_str(h, 0.45, min(s, 0.60))}, 0.22)"
 
-        popup_top = f"rgba({rgb_str(h, 0.97, min(s * 0.50, 0.32))}, 0.88)"
-        popup_bot = f"rgba({rgb_str(h, 0.91, min(s * 0.60, 0.38))}, 0.78)"
-        card_glass_top = f"rgba(255, 255, 255, 0.62)"
-        card_glass_bot = f"rgba({rgb_str(h, 0.92, min(s * 0.55, 0.35))}, 0.44)"
+        active_top = f"rgba({rgb_str(h, 0.88, min(s * 1.0, 0.65))}, 0.65)"
+        active_bot = f"rgba({rgb_str(h, 0.78, min(s * 1.0, 0.55))}, 0.50)"
+        active_border = "rgba(255, 255, 255, 0.95)"
+        active_shadow = f"0 4px 18px rgba({rgb_str(h, 0.45, min(s, 0.70))}, 0.30)"
 
-        bg_surface = f"rgba({glass_top_rgb}, 0.68)"
+        popup_top = f"rgba({rgb_str(h, 0.98, min(s * 0.40, 0.25))}, 0.90)"
+        popup_bot = f"rgba({rgb_str(h, 0.92, min(s * 0.50, 0.30))}, 0.82)"
+        card_glass_top = "rgba(255, 255, 255, 0.75)"
+        card_glass_bot = f"rgba({rgb_str(h, 0.94, min(s * 0.45, 0.25))}, 0.42)"
+
         bg_solid = popup_top
-        bg_overview = f"rgba({rgb_str(h, 0.94, min(s * 0.4, 0.25))}, 0.32)"
+        bg_overview = f"rgba({rgb_str(h, 0.96, min(s * 0.3, 0.20))}, 0.30)"
 
         accent_rgb = rgb_str(h, 0.42, min(s * 1.15, 0.78))
-        text_color = f"rgb({rgb_str(h, 0.14, min(s, 0.22))})"
+        text_color = f"rgb({rgb_str(h, 0.12, min(s, 0.20))})"
         hover_text = text_color
-        text_shadow = "0 1px 2px rgba(255, 255, 255, 0.55)"
-        icon_shadow = "0 1px 2px rgba(255, 255, 255, 0.45)"
 
     return {
         'bg_surface': bg_surface,
@@ -274,14 +272,16 @@ def extract_palette(image_path, scheme='prefer-dark'):
         'glass_bottom': glass_bottom,
         'panel_solid_top': panel_solid_top,
         'panel_solid_bot': panel_solid_bot,
-        'rim_rgb': rim_rgb,
-        'specular_rgb': specular_rgb,
         'glass_border': glass_border,
-        'glass_inner_shadow': glass_inner_shadow,
+        'glass_outer_shadow': glass_outer_shadow,
         'hover_top': hover_top,
         'hover_bot': hover_bot,
+        'hover_border': hover_border,
+        'hover_shadow': hover_shadow,
         'active_top': active_top,
         'active_bot': active_bot,
+        'active_border': active_border,
+        'active_shadow': active_shadow,
         'popup_top': popup_top,
         'popup_bot': popup_bot,
         'card_glass_top': card_glass_top,
@@ -289,8 +289,6 @@ def extract_palette(image_path, scheme='prefer-dark'):
         'accent_rgb': accent_rgb,
         'text_color': text_color,
         'hover_text': hover_text,
-        'text_shadow': text_shadow,
-        'icon_shadow': icon_shadow,
         'is_dark': is_dark,
         'hue': round(h * 360, 1),
         'hue2': round(h2 * 360, 1),
@@ -300,9 +298,9 @@ def extract_palette(image_path, scheme='prefer-dark'):
     }
 
 def generate_gnome_shell_css(palette):
-    """Generate M3 Monet Liquid/Frosted Glass stylesheet for GNOME Shell (Top bar + Quick Settings + Popups)."""
+    """Generate Ultra-Clear Crystal Liquid Glass stylesheet for GNOME Shell (Top bar + Quick Settings + Popups)."""
     hover_text = palette.get('hover_text', '#ffffff')
-    return f"""/* GNOME Shell Material Design 3 (M3) Monet Liquid & Frosted Glass Theme */
+    return f"""/* GNOME Shell Material Design 3 (M3) Ultra-Clear Crystal Liquid Glass Theme */
 
 .quick-settings .user-icon {{
   icon-size: 5em;
@@ -319,7 +317,7 @@ def generate_gnome_shell_css(palette):
 }}
 
 /* =========================================================
-   1. Main Top Bar: Floating Crystal Container
+   1. Main Top Bar: Ultra-Fluid Floating Container
    ========================================================= */
 #panel {{
   background-color: transparent !important;
@@ -329,21 +327,22 @@ def generate_gnome_shell_css(palette):
   font-family: 'Google Sans', sans-serif !important;
   height: 2.55em !important;
   padding: 4px 8px !important;
-  transition: background-color 260ms cubic-bezier(0.2, 0, 0, 1), box-shadow 260ms ease !important;
+  transition: background-color 220ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 220ms ease !important;
 }}
 
-/* Maximized window state: Smoked Monet Glass Top Bar */
+/* Maximized window state: Ethereal Smoked Glass Top Bar */
 #panel.solid {{
   background-color: {palette['panel_solid_bot']} !important;
   background-gradient-direction: vertical !important;
   background-gradient-start: {palette['panel_solid_top']} !important;
   background-gradient-end: {palette['panel_solid_bot']} !important;
-  border-bottom: 1px solid rgba({palette['rim_rgb']}, 0.24) !important;
-  box-shadow: inset 0 1px 1px rgba({palette['specular_rgb']}, 0.22) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28) !important;
 }}
 
 /* =========================================================
-   2. Floating Monet Glass Capsule Pills (Dual-Stop Specular Refraction)
+   2. Floating Crystal Liquid Glass Capsule Pills
+      (Pure clarity, zero milky fog in the middle, razor-thin specular rim)
    ========================================================= */
 #panel .panel-button {{
   background-color: {palette['bg_surface']} !important;
@@ -352,30 +351,30 @@ def generate_gnome_shell_css(palette):
   background-gradient-end: {palette['glass_bottom']} !important;
   border: 1px solid {palette['glass_border']} !important;
   border-radius: 999px !important;
-  box-shadow: {palette['glass_inner_shadow']} !important;
+  box-shadow: {palette['glass_outer_shadow']} !important;
   color: {palette['text_color']} !important;
-  text-shadow: {palette['text_shadow']} !important;
-  icon-shadow: {palette['icon_shadow']} !important;
+  text-shadow: none !important;
+  icon-shadow: none !important;
   font-family: 'Google Sans', sans-serif !important;
   font-weight: 600 !important;
   margin: 2px 4px !important;
   padding: 0 15px !important;
-  transition: background-color 240ms cubic-bezier(0.2, 0, 0, 1), border-color 240ms cubic-bezier(0.2, 0, 0, 1), color 240ms ease, box-shadow 240ms ease !important;
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1) !important;
 }}
 
-/* 3. Pill Hover - Iridescent Specular Glass Glow */
+/* 3. Pill Hover - Smooth Specular Luster Glow */
 #panel .panel-button:focus,
 #panel .panel-button:hover {{
   background-color: {palette['hover_top']} !important;
   background-gradient-direction: vertical !important;
   background-gradient-start: {palette['hover_top']} !important;
   background-gradient-end: {palette['hover_bot']} !important;
-  border-color: rgba({palette['rim_rgb']}, 0.68) !important;
-  box-shadow: inset 0 1px 3px rgba({palette['specular_rgb']}, 0.52) !important;
+  border-color: {palette['hover_border']} !important;
+  box-shadow: {palette['hover_shadow']} !important;
   color: {hover_text} !important;
 }}
 
-/* 4. Pill Active / Checked - Deep Refractive Monet Glass */
+/* 4. Pill Active / Checked - Deep Refractive Crystal Glass */
 #panel .panel-button:active,
 #panel .panel-button:checked,
 #panel .panel-button:overview {{
@@ -383,23 +382,24 @@ def generate_gnome_shell_css(palette):
   background-gradient-direction: vertical !important;
   background-gradient-start: {palette['active_top']} !important;
   background-gradient-end: {palette['active_bot']} !important;
-  border-color: rgba({palette['rim_rgb']}, 0.85) !important;
-  box-shadow: inset 0 1px 3px rgba(255, 255, 255, 0.55) !important;
+  border-color: {palette['active_border']} !important;
+  box-shadow: {palette['active_shadow']} !important;
   color: {hover_text} !important;
 }}
 
-/* 5. Center Date / Time & System Status Icons */
+/* 5. Center Date / Time & System Status Icons (Razor-Sharp Clarity) */
 #panel .clock-display {{
   font-weight: 600 !important;
-  letter-spacing: 0.35px !important;
+  letter-spacing: 0.3px !important;
+  text-shadow: none !important;
 }}
 
 #panel .system-status-icon {{
-  icon-shadow: {palette['icon_shadow']} !important;
+  icon-shadow: none !important;
 }}
 
 /* =========================================================
-   6. M3 Frosted Glass Popups, Quick Settings & Calendar Cards
+   6. Ultra-Clear Frosted Glass Popups, Quick Settings & Cards
    ========================================================= */
 .popup-menu,
 .popup-menu-boxpointer {{
@@ -414,13 +414,13 @@ def generate_gnome_shell_css(palette):
   background-gradient-direction: vertical !important;
   background-gradient-start: {palette['popup_top']} !important;
   background-gradient-end: {palette['popup_bot']} !important;
-  border: 1px solid rgba({palette['rim_rgb']}, 0.38) !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
   border-radius: 26px !important;
-  box-shadow: inset 0 1px 2px rgba({palette['specular_rgb']}, 0.30) !important;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.38) !important;
   padding: 14px !important;
   color: {palette['text_color']} !important;
   font-family: 'Google Sans', sans-serif !important;
-  transition: background-color 240ms ease, border-color 240ms ease !important;
+  transition: background-color 200ms ease, border-color 200ms ease !important;
 }}
 
 .quick-settings {{
@@ -438,8 +438,8 @@ def generate_gnome_shell_css(palette):
   background-gradient-direction: vertical !important;
   background-gradient-start: {palette['card_glass_top']} !important;
   background-gradient-end: {palette['card_glass_bot']} !important;
-  border: 1px solid rgba({palette['rim_rgb']}, 0.22) !important;
-  box-shadow: inset 0 1px 1px rgba({palette['specular_rgb']}, 0.18) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12) !important;
   border-radius: 18px !important;
 }}
 
@@ -451,7 +451,7 @@ def generate_gnome_shell_css(palette):
 .message:hover {{
   background-gradient-start: {palette['hover_top']} !important;
   background-gradient-end: {palette['hover_bot']} !important;
-  border-color: rgba({palette['rim_rgb']}, 0.45) !important;
+  border-color: rgba(255, 255, 255, 0.35) !important;
 }}
 
 .quick-toggle:checked,
@@ -460,8 +460,8 @@ def generate_gnome_shell_css(palette):
   background-gradient-direction: vertical !important;
   background-gradient-start: {palette['active_top']} !important;
   background-gradient-end: {palette['active_bot']} !important;
-  border: 1px solid rgba({palette['rim_rgb']}, 0.72) !important;
-  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.42) !important;
+  border: 1px solid {palette['active_border']} !important;
+  box-shadow: {palette['active_shadow']} !important;
   color: {hover_text} !important;
 }}
 
