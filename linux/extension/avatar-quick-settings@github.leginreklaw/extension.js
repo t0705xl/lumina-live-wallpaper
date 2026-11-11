@@ -18,6 +18,7 @@
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Gio from 'gi://Gio';
+import Meta from 'gi://Meta';
 import St from 'gi://St';
 import AccountsService from 'gi://AccountsService';
 
@@ -30,6 +31,7 @@ export default class QuickSettingsAvatarExtension extends Extension {
         this._avatar = null;
         this._idleId = 0;
         this._cssReloadIdleId = 0;
+        this._occlusionIdleId = 0;
         this._cssMonitor = null;
         this._lastOccluded = null;
         this._modificationFailed = false;
@@ -50,6 +52,7 @@ export default class QuickSettingsAvatarExtension extends Extension {
     disable() {
         Main.panel.statusArea.quickSettings?.disconnectObject(this);
         global.display?.disconnectObject(this);
+        global.window_manager?.disconnectObject(this);
         Main.overview?.disconnectObject(this);
         global.workspace_manager?.disconnectObject(this);
 
@@ -63,9 +66,23 @@ export default class QuickSettingsAvatarExtension extends Extension {
             this._cssReloadIdleId = 0;
         }
 
+        if (this._occlusionIdleId) {
+            GLib.source_remove(this._occlusionIdleId);
+            this._occlusionIdleId = 0;
+        }
+
         if (this._cssMonitor) {
             this._cssMonitor.cancel();
             this._cssMonitor = null;
+        }
+
+        for (const marker of ['monet-hot-reload-active', 'live-wallpaper-occluded']) {
+            try {
+                const path = GLib.build_filenamev([GLib.get_user_runtime_dir(), marker]);
+                GLib.unlink(path);
+            } catch (_e) {
+                // Ignore if marker does not exist
+            }
         }
 
         this._removeAvatar();
@@ -73,6 +90,12 @@ export default class QuickSettingsAvatarExtension extends Extension {
 
     _setupStylesheetHotReload() {
         try {
+            const markerPath = GLib.build_filenamev([
+                GLib.get_user_runtime_dir(),
+                'monet-hot-reload-active',
+            ]);
+            GLib.file_set_contents(markerPath, '1');
+
             this._cssMonitor = this.dir.monitor_directory(
                 Gio.FileMonitorFlags.WATCH_MOVES,
                 null
@@ -128,15 +151,37 @@ export default class QuickSettingsAvatarExtension extends Extension {
 
     _setupWallpaperOcclusionTracker() {
         try {
-            const update = () => this._updateOcclusionState();
-            global.display.connectObject('in-fullscreen-changed', update, this);
+            const scheduleUpdate = () => {
+                if (this._occlusionIdleId)
+                    GLib.source_remove(this._occlusionIdleId);
+                this._occlusionIdleId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 80, () => {
+                    this._occlusionIdleId = 0;
+                    this._updateOcclusionState();
+                    return GLib.SOURCE_REMOVE;
+                });
+            };
+
+            global.display.connectObject(
+                'in-fullscreen-changed', scheduleUpdate,
+                'restacked', scheduleUpdate,
+                'notify::focus-window', scheduleUpdate,
+                this
+            );
+            global.window_manager?.connectObject(
+                'size-change', scheduleUpdate,
+                'minimize', scheduleUpdate,
+                'unminimize', scheduleUpdate,
+                'map', scheduleUpdate,
+                'destroy', scheduleUpdate,
+                this
+            );
             Main.overview.connectObject(
-                'showing', update,
-                'hidden', update,
+                'showing', scheduleUpdate,
+                'hidden', scheduleUpdate,
                 this
             );
             global.workspace_manager?.connectObject(
-                'active-workspace-changed', update,
+                'active-workspace-changed', scheduleUpdate,
                 this
             );
             this._updateOcclusionState();
@@ -145,11 +190,57 @@ export default class QuickSettingsAvatarExtension extends Extension {
         }
     }
 
+    _isPrimaryDesktopOccluded() {
+        if (Main.overview?.visible)
+            return false;
+
+        if (Main.layoutManager.primaryMonitor?.inFullscreen)
+            return true;
+
+        const primaryIdx = Main.layoutManager.primaryIndex ?? 0;
+        const activeWs = global.workspace_manager?.get_active_workspace?.();
+        if (!activeWs)
+            return false;
+
+        const workArea = Main.layoutManager.getWorkAreaForMonitor?.(primaryIdx);
+        const windows = activeWs.list_windows?.() ?? [];
+
+        for (const win of windows) {
+            if (!win || win.minimized || !win.showing_on_its_workspace?.())
+                continue;
+            if (win.get_monitor?.() !== primaryIdx)
+                continue;
+
+            const wType = win.get_window_type?.();
+            if (wType !== Meta.WindowType.NORMAL)
+                continue;
+
+            const title = win.get_title?.() ?? '';
+            if (title === 'GNOME Live Wallpaper')
+                continue;
+
+            if (win.is_fullscreen?.())
+                return true;
+
+            if (typeof win.get_maximized === 'function' && win.get_maximized() === Meta.MaximizeFlags.BOTH)
+                return true;
+
+            if (win.maximized_horizontally && win.maximized_vertically)
+                return true;
+
+            if (workArea && typeof win.get_frame_rect === 'function') {
+                const rect = win.get_frame_rect();
+                if (rect.width >= workArea.width * 0.94 && rect.height >= workArea.height * 0.94)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
     _updateOcclusionState() {
         try {
-            const inFullscreen = Boolean(Main.layoutManager.primaryMonitor?.inFullscreen);
-            const inOverview = Boolean(Main.overview?.visible);
-            const occluded = inFullscreen && !inOverview;
+            const occluded = this._isPrimaryDesktopOccluded();
 
             if (this._lastOccluded === occluded)
                 return;

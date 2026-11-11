@@ -19,6 +19,8 @@ def print_usage():
   python lumina.py set <video.mp4 | image.png>   设置动态视频壁纸或静态壁纸，并自动同步全局莫奈配色
   python lumina.py live                          切换回最近使用的动态视频壁纸
   python lumina.py static                        切换回原生静态壁纸
+  python lumina.py list                          列出所有已注册的动态壁纸
+  python lumina.py remove <名称>                 删除指定的动态壁纸并清理封面
   python lumina.py daemon                        启动动态壁纸后台守护进程
   python lumina.py monet                         立即根据当前壁纸提取并应用莫奈 (Material You) 主题色
   python lumina.py refresh-badges                刷新系统设置中的「▶ LIVE」缩略图角标 (Linux GNOME)
@@ -60,6 +62,10 @@ def main():
             subprocess.run([set_script, "--live"], check=True)
         elif cmd == "static":
             subprocess.run([set_script, "--static"], check=True)
+        elif cmd == "list":
+            subprocess.run([set_script, "--list"], check=True)
+        elif cmd == "remove" and len(sys.argv) >= 3:
+            subprocess.run([set_script, "--remove", sys.argv[2]], check=True)
         elif cmd == "refresh-badges":
             subprocess.run([set_script, "--refresh-badges"], check=True)
         elif cmd == "daemon":

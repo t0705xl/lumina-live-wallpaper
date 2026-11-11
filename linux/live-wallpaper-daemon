@@ -13,6 +13,10 @@ const Gst = imports.gi.Gst;
 const Cairo = imports.gi.cairo;
 const ByteArray = imports.byteArray;
 
+if (!GLib.getenv('DISPLAY')) {
+    GLib.setenv('DISPLAY', ':0', false);
+}
+
 Gtk.init();
 Gst.init(null);
 
@@ -46,13 +50,32 @@ function getPrimaryGeometry() {
 }
 
 let geom = getPrimaryGeometry();
+const maxFps = Math.max(15, Math.min(120, parseInt(GLib.getenv('LIVE_WALLPAPER_MAX_FPS') || '30', 10) || 30));
 
 // Hardware-accelerated zero-copy DMA-BUF sink (same engine & GdkCicpParams BT.709->sRGB color pipeline as GNOME Showtime)
 const sink = Gst.ElementFactory.make('gtk4paintablesink', 'sink');
 sink.set_property('sync', true);
 
+// Wrap sink with zero-copy videorate (drop-only=true) to cap 60fps/120fps videos at 30fps without mapping DMABuf memory
+let videoSinkElement = sink;
+const rateLimiter = Gst.ElementFactory.make('videorate', 'ratelimiter');
+if (rateLimiter) {
+    rateLimiter.set_property('drop-only', true);
+    rateLimiter.set_property('max-rate', maxFps);
+    const sinkBin = Gst.Bin.new('video-sink-bin');
+    sinkBin.add(rateLimiter);
+    sinkBin.add(sink);
+    if (rateLimiter.link(sink)) {
+        const sinkPad = rateLimiter.get_static_pad('sink');
+        if (sinkPad) {
+            sinkBin.add_pad(Gst.GhostPad.new('sink', sinkPad));
+            videoSinkElement = sinkBin;
+        }
+    }
+}
+
 const pipeline = Gst.ElementFactory.make('playbin', 'player');
-pipeline.set_property('video-sink', sink);
+pipeline.set_property('video-sink', videoSinkElement);
 // GstPlayFlags: VIDEO (1 << 0) | NATIVE_VIDEO (1 << 6) = 65 (no audio/subtitles, direct VA-API DMA-BUF zero-copy)
 pipeline.set_property('flags', (1 << 0) | (1 << 6));
 
@@ -99,8 +122,11 @@ win.set_size_request(geom.width, geom.height);
 win.set_child(picture);
 
 let winXid = 0;
+let hintsAppliedForXid = 0;
+let lastTransparentState = null;
 let isLiveActive = false;
 let fadeTimerId = 0;
+let errorRetryTimerId = 0;
 let pendingPreroll = false;
 let segmentArmed = false;
 
@@ -108,6 +134,13 @@ function cancelFadeAnimation() {
     if (fadeTimerId !== 0) {
         GLib.source_remove(fadeTimerId);
         fadeTimerId = 0;
+    }
+}
+
+function cancelErrorRetryTimer() {
+    if (errorRetryTimerId !== 0) {
+        GLib.source_remove(errorRetryTimerId);
+        errorRetryTimerId = 0;
     }
 }
 
@@ -119,6 +152,10 @@ function setWindowTransparent(transparent) {
     if (!winXid) {
         return;
     }
+    if (lastTransparentState === transparent) {
+        return;
+    }
+    lastTransparentState = transparent;
     if (transparent) {
         GLib.spawn_command_line_sync(
             `xprop -id ${winXid} -f _NET_WM_WINDOW_OPACITY 32c -set _NET_WM_WINDOW_OPACITY 0`
@@ -143,7 +180,7 @@ function startFadeIn() {
 
     const totalSteps = 9;
     let step = 1;
-    picture.set_opacity(0.08);
+    picture.set_opacity(0.12);
     picture.queue_draw();
 
     fadeTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 20, () => {
@@ -161,7 +198,7 @@ function startFadeIn() {
         // Cubic ease-out curve for silky visual appearance
         const t = step / totalSteps;
         const eased = 1.0 - Math.pow(1.0 - t, 3);
-        picture.set_opacity(Math.max(0.08, Math.min(1.0, eased)));
+        picture.set_opacity(Math.max(0.12, Math.min(1.0, eased)));
         picture.queue_draw();
         return GLib.SOURCE_CONTINUE;
     });
@@ -217,12 +254,16 @@ function applyDesktopWindowHints() {
     }
     if (typeof surf.get_xid === 'function') {
         winXid = surf.get_xid();
-        GLib.spawn_command_line_sync(
-            `xprop -id ${winXid} -f _NET_WM_WINDOW_TYPE 32a -set _NET_WM_WINDOW_TYPE _NET_WM_WINDOW_TYPE_DESKTOP`
-        );
-        GLib.spawn_command_line_sync(
-            `xprop -id ${winXid} -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_BELOW,_NET_WM_STATE_STICKY,_NET_WM_STATE_SKIP_TASKBAR,_NET_WM_STATE_SKIP_PAGER`
-        );
+        if (winXid && hintsAppliedForXid !== winXid) {
+            hintsAppliedForXid = winXid;
+            lastTransparentState = null;
+            GLib.spawn_command_line_sync(
+                `xprop -id ${winXid} -f _NET_WM_WINDOW_TYPE 32a -set _NET_WM_WINDOW_TYPE _NET_WM_WINDOW_TYPE_DESKTOP`
+            );
+            GLib.spawn_command_line_sync(
+                `xprop -id ${winXid} -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_BELOW,_NET_WM_STATE_STICKY,_NET_WM_STATE_SKIP_TASKBAR,_NET_WM_STATE_SKIP_PAGER`
+            );
+        }
         setWindowTransparent(!isLiveActive);
     }
     surf.set_input_region(new Cairo.Region());
@@ -241,13 +282,41 @@ win.connect('map', () => {
 
 win.set_visible(true);
 
+let trackedMonitor = null;
+let monitorGeomSigId = 0;
+let monitorScaleSigId = 0;
+
+function updateMonitorGeometry() {
+    geom = getPrimaryGeometry();
+    win.set_default_size(geom.width, geom.height);
+    win.set_size_request(geom.width, geom.height);
+}
+
+function bindMonitorSignals() {
+    const monitors = disp ? disp.get_monitors() : null;
+    if (!monitors || monitors.get_n_items() === 0) {
+        return;
+    }
+    const primaryMon = monitors.get_item(0);
+    if (trackedMonitor === primaryMon) {
+        return;
+    }
+    if (trackedMonitor) {
+        if (monitorGeomSigId) trackedMonitor.disconnect(monitorGeomSigId);
+        if (monitorScaleSigId) trackedMonitor.disconnect(monitorScaleSigId);
+    }
+    trackedMonitor = primaryMon;
+    if (trackedMonitor) {
+        monitorGeomSigId = trackedMonitor.connect('notify::geometry', () => updateMonitorGeometry());
+        monitorScaleSigId = trackedMonitor.connect('notify::scale-factor', () => updateMonitorGeometry());
+    }
+    updateMonitorGeometry();
+}
+
 const monitors = disp ? disp.get_monitors() : null;
 if (monitors) {
-    monitors.connect('items-changed', () => {
-        geom = getPrimaryGeometry();
-        win.set_default_size(geom.width, geom.height);
-        win.set_size_request(geom.width, geom.height);
-    });
+    bindMonitorSignals();
+    monitors.connect('items-changed', () => bindMonitorSignals());
 }
 
 let currentVideoPath = '';
@@ -255,6 +324,7 @@ let isScreenLocked = false;
 let isDisplayOff = false;
 let isOccluded = false;
 let isPowerSaver = false;
+let isSystemSleeping = false;
 let errorRetries = 0;
 
 if (GLib.file_test(runtimeOcclusionPath, GLib.FileTest.EXISTS)) {
@@ -269,7 +339,7 @@ if (GLib.file_test(runtimeOcclusionPath, GLib.FileTest.EXISTS)) {
 }
 
 function shouldPausePlayback() {
-    return isScreenLocked || isDisplayOff || isOccluded || isPowerSaver;
+    return isScreenLocked || isDisplayOff || isOccluded || isPowerSaver || isSystemSleeping;
 }
 
 function updatePlaybackState(reason) {
@@ -292,9 +362,14 @@ bus.connect('message::async-done', () => {
     }
     errorRetries = 0;
 
+    if (pendingPreroll) {
+        pendingPreroll = false;
+        startFadeIn();
+    }
+
     if (!segmentArmed) {
         segmentArmed = true;
-        // Arm non-flushing segment loop for zero-hiccup looping at end of stream
+        // Arm segment loop for seamless looping at end of stream
         pipeline.seek(
             1.0,
             Gst.Format.TIME,
@@ -307,12 +382,8 @@ bus.connect('message::async-done', () => {
         return;
     }
 
-    if (pendingPreroll) {
-        pendingPreroll = false;
-        startFadeIn();
-        if (shouldPausePlayback()) {
-            pipeline.set_state(Gst.State.PAUSED);
-        }
+    if (shouldPausePlayback()) {
+        pipeline.set_state(Gst.State.PAUSED);
     }
 });
 
@@ -355,9 +426,11 @@ bus.connect('message::error', (_bus, msg) => {
     const [err, dbg] = msg.parse_error();
     printerr(`[LiveWallpaper] GStreamer error: ${err.message} (${dbg || 'no debug'})\n`);
     pipeline.set_state(Gst.State.NULL);
+    cancelErrorRetryTimer();
     errorRetries += 1;
     if (errorRetries <= 3 && isLiveActive && !shouldPausePlayback() && currentVideoPath) {
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+        errorRetryTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+            errorRetryTimerId = 0;
             if (isLiveActive && !shouldPausePlayback() && currentVideoPath) {
                 pendingPreroll = true;
                 segmentArmed = false;
@@ -454,6 +527,8 @@ function syncWallpaperMode() {
 
     if (targetVideo) {
         errorRetries = 0;
+        cancelErrorRetryTimer();
+        const wasLiveActive = isLiveActive;
         const videoChanged = currentVideoPath !== targetVideo || !isLiveActive;
         isLiveActive = true;
 
@@ -464,10 +539,16 @@ function syncWallpaperMode() {
             segmentArmed = false;
             print(`[LiveWallpaper] Activating dynamic video wallpaper: ${currentVideoPath} (cover: ${activeWallpaper})`);
 
-            // Clear stale frame while prerolling so GNOME's native cover transition shines underneath
-            picture.set_paintable(emptyPaintable);
-            picture.set_opacity(1.0);
-            picture.queue_draw();
+            if (!wasLiveActive) {
+                // Coming from static wallpaper: keep emptyPaintable until first video frame prerolls
+                picture.set_paintable(emptyPaintable);
+                picture.set_opacity(1.0);
+                picture.queue_draw();
+            } else {
+                // Switching from dynamic video A -> dynamic video B: dim smoothly without flashing empty static frame
+                picture.set_opacity(0.24);
+                picture.queue_draw();
+            }
 
             pipeline.set_state(Gst.State.NULL);
             pipeline.set_property('uri', GLib.filename_to_uri(currentVideoPath, null));
@@ -477,6 +558,7 @@ function syncWallpaperMode() {
             updatePlaybackState();
         }
     } else {
+        cancelErrorRetryTimer();
         if (isLiveActive) {
             print(`[LiveWallpaper] Switching to native static wallpaper: ${activeWallpaper}`);
             isLiveActive = false;
@@ -545,7 +627,7 @@ try {
     // Ignore if DisplayConfig D-Bus is unavailable
 }
 
-// 3. Fullscreen Window Occlusion Auto-Pause (from GNOME Shell Extension)
+// 3. Window Occlusion Auto-Pause (Maximized / Fullscreen from GNOME Shell Extension)
 try {
     Gio.DBus.session.signal_subscribe(
         null,
@@ -558,7 +640,7 @@ try {
             const [occluded] = params.deep_unpack();
             if (isOccluded !== occluded) {
                 isOccluded = occluded;
-                updatePlaybackState(occluded ? 'fullscreen occluded' : 'desktop visible');
+                updatePlaybackState(occluded ? 'desktop occluded' : 'desktop visible');
             }
         }
     );
@@ -605,6 +687,41 @@ try {
     );
 } catch (_e) {
     // Ignore if PowerProfiles daemon is unavailable
+}
+
+// 5. System Suspend / Resume Recovery (org.freedesktop.login1.Manager PrepareForSleep)
+try {
+    Gio.DBus.system.signal_subscribe(
+        'org.freedesktop.login1',
+        'org.freedesktop.login1.Manager',
+        'PrepareForSleep',
+        '/org/freedesktop/login1',
+        null,
+        Gio.DBusSignalFlags.NONE,
+        (_conn, _sender, _path, _iface, _signal, params) => {
+            const [sleeping] = params.deep_unpack();
+            if (isSystemSleeping !== sleeping) {
+                isSystemSleeping = sleeping;
+                if (sleeping) {
+                    if (isLiveActive) {
+                        print('[LiveWallpaper] System suspending, releasing hardware decoder state');
+                        pipeline.set_state(Gst.State.PAUSED);
+                    }
+                } else {
+                    if (isLiveActive && currentVideoPath) {
+                        print('[LiveWallpaper] System resumed from suspend, refreshing VA-API/DMABuf pipeline');
+                        pendingPreroll = true;
+                        segmentArmed = false;
+                        pipeline.set_state(Gst.State.NULL);
+                        pipeline.set_property('uri', GLib.filename_to_uri(currentVideoPath, null));
+                        pipeline.set_state(Gst.State.PLAYING);
+                    }
+                }
+            }
+        }
+    );
+} catch (_e) {
+    // Ignore if login1 D-Bus is unavailable
 }
 
 syncWallpaperMode();

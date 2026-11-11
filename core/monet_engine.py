@@ -24,31 +24,65 @@ def rgba_color(h, l, s, a):
 
 
 def extract_dominant_hls(image_path):
-    """Extract dominant vibrant hue and saturation from an image file."""
-    if not image_path:
-        return 0.58, 0.35
+    """
+    Extract dominant vibrant hue and saturation using 36-bin circular Hue Histogram
+    + Spatial Center/Top-Bar Weighting + Area-Chroma Clustering.
+    Prevents single-pixel high-saturation noise from hijacking the wallpaper palette.
+    """
+    import math
+    import os
+    if not image_path or not os.path.isfile(image_path):
+        return 0.58, 0.42
     try:
-        img = Image.open(image_path).convert("RGB").resize((64, 64))
+        img = Image.open(image_path).convert("RGB")
+        w_size, h_size = 96, 96
+        img = img.resize((w_size, h_size), Image.Resampling.BILINEAR)
         try:
             pixels = list(img.get_flattened_data())
         except AttributeError:
             pixels = list(img.getdata())
 
-        scored = []
-        for p in pixels:
-            r, g, b = p[:3]
-            h, l, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
-            if 0.15 < l < 0.85 and s > 0.15:
-                score = s * (1.0 - abs(l - 0.5))
-                scored.append((score, (h, l, s)))
+        num_bins = 36
+        bin_weights = [0.0] * num_bins
+        bin_samples = [[] for _ in range(num_bins)]
 
-        if scored:
-            scored.sort(key=lambda x: x[0], reverse=True)
-            h, _, s = scored[0][1]
-            return h, s
+        for idx, p in enumerate(pixels):
+            r, g, b = p[:3]
+            ph, pl, ps = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+            if 0.10 < pl < 0.90 and ps > 0.10:
+                y_norm = (idx // w_size) / float(h_size)
+                x_norm = (idx % w_size) / float(w_size)
+                center_bias = 1.0 + 0.18 * (1.0 - abs(x_norm - 0.5) * 2.0)
+                top_bias = 1.12 if y_norm < 0.20 else 1.0
+                chroma_score = (ps ** 0.72) * (1.0 - 0.65 * abs(pl - 0.50))
+                w = chroma_score * center_bias * top_bias
+
+                b_idx = int(ph * num_bins) % num_bins
+                bin_weights[b_idx] += w
+                bin_samples[b_idx].append((ph, pl, ps, w))
+
+        if sum(bin_weights) > 0:
+            smoothed = [0.0] * num_bins
+            kernel = [(-2, 0.12), (-1, 0.24), (0, 0.38), (1, 0.24), (2, 0.12)]
+            for i in range(num_bins):
+                smoothed[i] = sum(bin_weights[(i + offset) % num_bins] * kw for offset, kw in kernel)
+
+            peak_bin = max(range(num_bins), key=lambda i: smoothed[i])
+            cluster_samples = []
+            for offset in (-2, -1, 0, 1, 2):
+                cluster_samples.extend(bin_samples[(peak_bin + offset) % num_bins])
+
+            if cluster_samples:
+                cw_sum = sum(item[3] for item in cluster_samples)
+                sin_sum = sum(math.sin(2.0 * math.pi * item[0]) * item[3] for item in cluster_samples)
+                cos_sum = sum(math.cos(2.0 * math.pi * item[0]) * item[3] for item in cluster_samples)
+                h = (math.atan2(sin_sum, cos_sum) / (2.0 * math.pi)) % 1.0
+                s = sum(item[2] * item[3] for item in cluster_samples) / cw_sum
+                s = max(0.28, min(0.82, s * 1.15))
+                return h, s
     except Exception:
         pass
-    return 0.58, 0.35
+    return 0.58, 0.42
 
 
 def extract_palette(image_path, scheme="prefer-dark"):

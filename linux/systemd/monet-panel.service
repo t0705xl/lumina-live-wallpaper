@@ -1,12 +1,13 @@
 [Unit]
 Description=Material You Monet Dynamic Color Extractor for GNOME Status Bar
 After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/monet-panel.py --watch
 Restart=on-failure
-RestartSec=5
+RestartSec=3
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target

@@ -91,78 +91,218 @@ def get_current_wallpaper():
     return None
 
 def extract_palette(image_path, scheme='prefer-dark'):
-    """Extract M3 tonal palette from image (supports both Dark and Light color schemes)."""
+    """
+    Extract M3 Monet Glass tonal palette using 36-bin circular Hue Histogram
+    + Spatial Center/Top-Bar Weighting + Area-Chroma Clustering.
+    Prevents small high-saturation noise pixels from hijacking the dominant wallpaper theme,
+    and extracts both a Primary Hue (h) and a Secondary Specular Hue (h2) for iridescent glass.
+    """
+    import math
     is_dark = (scheme == 'prefer-dark')
-    try:
-        img = Image.open(image_path).convert('RGB')
-        img = img.resize((64, 64))
-        
+    h, s, l_avg = 0.58, 0.42, 0.45
+    h2, s2 = 0.64, 0.38
+
+    if image_path and os.path.isfile(image_path):
         try:
-            pixels = list(img.get_flattened_data())
-        except AttributeError:
-            pixels = list(img.getdata())
+            img = Image.open(image_path).convert('RGB')
+            w_size, h_size = 96, 96
+            img = img.resize((w_size, h_size), Image.Resampling.BILINEAR)
+            try:
+                pixels = list(img.get_flattened_data())
+            except AttributeError:
+                pixels = list(img.getdata())
 
-        scored = []
-        for p in pixels:
-            r, g, b = p[:3]
-            h, l, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
-            if 0.15 < l < 0.85 and s > 0.15:
-                score = s * (1.0 - abs(l - 0.5))
-                scored.append((score, (r, g, b), (h, l, s)))
+            num_bins = 36  # 10 degrees per bin
+            bin_weights = [0.0] * num_bins
+            bin_samples = [[] for _ in range(num_bins)]
 
-        if scored:
-            scored.sort(key=lambda x: x[0], reverse=True)
-            h, _, s = scored[0][2]
-        else:
-            h, s = 0.58, 0.35
-    except Exception as e:
-        print(f"[Monet] Error processing image: {e}", file=sys.stderr)
-        h, s = 0.58, 0.35
+            for idx, p in enumerate(pixels):
+                r, g, b = p[:3]
+                ph, pl, ps = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+                # Filter out near-black, near-white, and achromatic grey pixels
+                if 0.10 < pl < 0.90 and ps > 0.10:
+                    y_norm = (idx // w_size) / float(h_size)
+                    x_norm = (idx % w_size) / float(w_size)
+                    # Gentle visual salience bias: center subject + top bar contact region
+                    center_bias = 1.0 + 0.18 * (1.0 - abs(x_norm - 0.5) * 2.0)
+                    top_bias = 1.12 if y_norm < 0.20 else 1.0
+                    # Area-accumulated perceptual weight (sub-linear saturation prevents 1-pixel neon hijack)
+                    chroma_score = (ps ** 0.72) * (1.0 - 0.65 * abs(pl - 0.50))
+                    w = chroma_score * center_bias * top_bias
+
+                    b_idx = int(ph * num_bins) % num_bins
+                    bin_weights[b_idx] += w
+                    bin_samples[b_idx].append((ph, pl, ps, w))
+
+            total_weight = sum(bin_weights)
+            if total_weight > 0:
+                # Circular 5-tap Gaussian smoothing across adjacent 10-deg hue bins
+                smoothed = [0.0] * num_bins
+                kernel = [(-2, 0.12), (-1, 0.24), (0, 0.38), (1, 0.24), (2, 0.12)]
+                for i in range(num_bins):
+                    smoothed[i] = sum(bin_weights[(i + offset) % num_bins] * kw for offset, kw in kernel)
+
+                peak_bin = max(range(num_bins), key=lambda i: smoothed[i])
+
+                # Gather cluster samples within +-2 bins (+-20 deg) of the winning peak
+                cluster_samples = []
+                for offset in (-2, -1, 0, 1, 2):
+                    cluster_samples.extend(bin_samples[(peak_bin + offset) % num_bins])
+
+                if cluster_samples:
+                    cw_sum = sum(item[3] for item in cluster_samples)
+                    sin_sum = sum(math.sin(2.0 * math.pi * item[0]) * item[3] for item in cluster_samples)
+                    cos_sum = sum(math.cos(2.0 * math.pi * item[0]) * item[3] for item in cluster_samples)
+                    h = (math.atan2(sin_sum, cos_sum) / (2.0 * math.pi)) % 1.0
+                    s = sum(item[2] * item[3] for item in cluster_samples) / cw_sum
+                    l_avg = sum(item[1] * item[3] for item in cluster_samples) / cw_sum
+                    # Boost saturation moderately so dark/muted wallpapers still produce lively Monet glass
+                    s = max(0.28, min(0.82, s * 1.15))
+
+                # Find a secondary harmonic/contrast hue peak (>= 35 deg away) for glass specular iridescence
+                secondary_candidates = []
+                for i in range(num_bins):
+                    dist = min((i - peak_bin) % num_bins, (peak_bin - i) % num_bins)
+                    if dist >= 4 and smoothed[i] > smoothed[peak_bin] * 0.14:
+                        secondary_candidates.append((smoothed[i], i))
+                if secondary_candidates:
+                    secondary_candidates.sort(reverse=True)
+                    sec_bin = secondary_candidates[0][1]
+                    sec_samples = []
+                    for offset in (-1, 0, 1):
+                        sec_samples.extend(bin_samples[(sec_bin + offset) % num_bins])
+                    if sec_samples:
+                        sw_sum = sum(item[3] for item in sec_samples)
+                        s_sin = sum(math.sin(2.0 * math.pi * item[0]) * item[3] for item in sec_samples)
+                        s_cos = sum(math.cos(2.0 * math.pi * item[0]) * item[3] for item in sec_samples)
+                        h2 = (math.atan2(s_sin, s_cos) / (2.0 * math.pi)) % 1.0
+                        s2 = max(0.30, min(0.78, sum(item[2] * item[3] for item in sec_samples) / sw_sum))
+                    else:
+                        h2, s2 = (h + 0.07) % 1.0, s
+                else:
+                    h2, s2 = (h + 0.07) % 1.0, s
+        except Exception as e:
+            print(f"[Monet] Error processing image: {e}", file=sys.stderr)
+
+    def rgb_tuple(hv, lv, sv):
+        rr, gg, bb = colorsys.hls_to_rgb(hv % 1.0, max(0.0, min(1.0, lv)), max(0.0, min(1.0, sv)))
+        return int(round(rr * 255)), int(round(gg * 255)), int(round(bb * 255))
+
+    def rgb_str(hv, lv, sv):
+        rr, gg, bb = rgb_tuple(hv, lv, sv)
+        return f"{rr}, {gg}, {bb}"
 
     if is_dark:
-        # Dark M3 Tonal Surface
-        sr, sg, sb = colorsys.hls_to_rgb(h, 0.14, min(s, 0.22))
-        bg_surface = f"rgba({int(sr*255)}, {int(sg*255)}, {int(sb*255)}, 0.82)"
-        bg_solid = f"rgba({int(sr*255)}, {int(sg*255)}, {int(sb*255)}, 0.95)"
-        bg_overview = f"rgba({int(sr*255*0.65)}, {int(sg*255*0.65)}, {int(sb*255*0.65)}, 0.40)"
+        # Dark Mode Liquid / Frosted Glass Palette
+        # Top of glass catches overhead light (brighter, slightly higher saturation & secondary hue blend)
+        glass_top_rgb = rgb_str(h, 0.24, min(s * 0.85, 0.52))
+        glass_bot_rgb = rgb_str(h, 0.12, min(s * 0.70, 0.38))
+        glass_top = f"rgba({glass_top_rgb}, 0.56)"
+        glass_bottom = f"rgba({glass_bot_rgb}, 0.38)"
 
-        ar, ag, ab = colorsys.hls_to_rgb(h, 0.78, min(s * 1.1, 0.72))
-        accent_rgb = f"{int(ar*255)}, {int(ag*255)}, {int(ab*255)}"
+        # Maximized panel (#panel.solid) smoked glass gradient
+        panel_solid_top = f"rgba({rgb_str(h, 0.16, min(s * 0.65, 0.35))}, 0.76)"
+        panel_solid_bot = f"rgba({rgb_str(h, 0.10, min(s * 0.55, 0.28))}, 0.62)"
 
-        tr, tg, tb = colorsys.hls_to_rgb(h, 0.94, min(s, 0.12))
-        text_color = f"rgb({int(tr*255)}, {int(tg*255)}, {int(tb*255)})"
+        # Specular rim & inner reflection highlight
+        rim_rgb = rgb_str(h, 0.82, min(s * 1.15, 0.78))
+        specular_rgb = rgb_str(h2, 0.92, min(s2 * 0.90, 0.65))
+        glass_border = f"rgba({rim_rgb}, 0.38)"
+        glass_inner_shadow = f"inset 0 1px 2px rgba({specular_rgb}, 0.34)"
+
+        # Hover & Active glass states
+        hover_top = f"rgba({rgb_str(h, 0.36, min(s * 1.05, 0.68))}, 0.68)"
+        hover_bot = f"rgba({rgb_str(h2, 0.22, min(s2 * 0.95, 0.58))}, 0.48)"
+        active_top = f"rgba({rgb_str(h, 0.46, min(s * 1.15, 0.76))}, 0.78)"
+        active_bot = f"rgba({rgb_str(h2, 0.30, min(s2 * 1.05, 0.68))}, 0.58)"
+
+        # Popup menu & Quick Settings frosted glass
+        popup_top = f"rgba({rgb_str(h, 0.19, min(s * 0.75, 0.42))}, 0.84)"
+        popup_bot = f"rgba({rgb_str(h, 0.11, min(s * 0.65, 0.32))}, 0.74)"
+        card_glass_top = f"rgba({rgb_str(h, 0.26, min(s * 0.70, 0.40))}, 0.42)"
+        card_glass_bot = f"rgba({rgb_str(h, 0.17, min(s * 0.60, 0.32))}, 0.28)"
+
+        bg_surface = f"rgba({glass_top_rgb}, 0.54)"
+        bg_solid = popup_top
+        bg_overview = f"rgba({rgb_str(h, 0.10, min(s * 0.5, 0.25))}, 0.38)"
+
+        accent_rgb = rgb_str(h, 0.78, min(s * 1.15, 0.76))
+        text_color = f"rgb({rgb_str(h, 0.96, min(s, 0.16))})"
         hover_text = "#ffffff"
+        text_shadow = "0 1px 3px rgba(0, 0, 0, 0.48)"
+        icon_shadow = "0 1px 2px rgba(0, 0, 0, 0.42)"
     else:
-        # Light M3 Tonal Surface
-        sr, sg, sb = colorsys.hls_to_rgb(h, 0.94, min(s, 0.25))
-        bg_surface = f"rgba({int(sr*255)}, {int(sg*255)}, {int(sb*255)}, 0.85)"
-        bg_solid = f"rgba({int(sr*255)}, {int(sg*255)}, {int(sb*255)}, 0.96)"
-        bg_overview = f"rgba({int(sr*255)}, {int(sg*255)}, {int(sb*255)}, 0.35)"
+        # Light Mode Crystal Pearl Glass Palette
+        glass_top_rgb = rgb_str(h, 0.98, min(s * 0.55, 0.35))
+        glass_bot_rgb = rgb_str(h, 0.90, min(s * 0.70, 0.42))
+        glass_top = f"rgba({glass_top_rgb}, 0.72)"
+        glass_bottom = f"rgba({glass_bot_rgb}, 0.52)"
 
-        ar, ag, ab = colorsys.hls_to_rgb(h, 0.42, min(s * 1.15, 0.75))
-        accent_rgb = f"{int(ar*255)}, {int(ag*255)}, {int(ab*255)}"
+        panel_solid_top = f"rgba({rgb_str(h, 0.96, min(s * 0.50, 0.30))}, 0.84)"
+        panel_solid_bot = f"rgba({rgb_str(h, 0.90, min(s * 0.60, 0.35))}, 0.72)"
 
-        tr, tg, tb = colorsys.hls_to_rgb(h, 0.14, min(s, 0.18))
-        text_color = f"rgb({int(tr*255)}, {int(tg*255)}, {int(tb*255)})"
+        rim_rgb = rgb_str(h, 0.52, min(s * 1.10, 0.72))
+        specular_rgb = "255, 255, 255"
+        glass_border = f"rgba(255, 255, 255, 0.68)"
+        glass_inner_shadow = f"inset 0 1px 2px rgba(255, 255, 255, 0.80)"
+
+        hover_top = f"rgba({rgb_str(h, 0.92, min(s * 0.85, 0.55))}, 0.82)"
+        hover_bot = f"rgba({rgb_str(h2, 0.84, min(s2 * 0.85, 0.55))}, 0.66)"
+        active_top = f"rgba({rgb_str(h, 0.85, min(s * 1.0, 0.68))}, 0.88)"
+        active_bot = f"rgba({rgb_str(h2, 0.76, min(s2 * 0.95, 0.62))}, 0.74)"
+
+        popup_top = f"rgba({rgb_str(h, 0.97, min(s * 0.50, 0.32))}, 0.88)"
+        popup_bot = f"rgba({rgb_str(h, 0.91, min(s * 0.60, 0.38))}, 0.78)"
+        card_glass_top = f"rgba(255, 255, 255, 0.62)"
+        card_glass_bot = f"rgba({rgb_str(h, 0.92, min(s * 0.55, 0.35))}, 0.44)"
+
+        bg_surface = f"rgba({glass_top_rgb}, 0.68)"
+        bg_solid = popup_top
+        bg_overview = f"rgba({rgb_str(h, 0.94, min(s * 0.4, 0.25))}, 0.32)"
+
+        accent_rgb = rgb_str(h, 0.42, min(s * 1.15, 0.78))
+        text_color = f"rgb({rgb_str(h, 0.14, min(s, 0.22))})"
         hover_text = text_color
+        text_shadow = "0 1px 2px rgba(255, 255, 255, 0.55)"
+        icon_shadow = "0 1px 2px rgba(255, 255, 255, 0.45)"
 
     return {
         'bg_surface': bg_surface,
         'bg_solid': bg_solid,
         'bg_overview': bg_overview,
+        'glass_top': glass_top,
+        'glass_bottom': glass_bottom,
+        'panel_solid_top': panel_solid_top,
+        'panel_solid_bot': panel_solid_bot,
+        'rim_rgb': rim_rgb,
+        'specular_rgb': specular_rgb,
+        'glass_border': glass_border,
+        'glass_inner_shadow': glass_inner_shadow,
+        'hover_top': hover_top,
+        'hover_bot': hover_bot,
+        'active_top': active_top,
+        'active_bot': active_bot,
+        'popup_top': popup_top,
+        'popup_bot': popup_bot,
+        'card_glass_top': card_glass_top,
+        'card_glass_bot': card_glass_bot,
         'accent_rgb': accent_rgb,
         'text_color': text_color,
         'hover_text': hover_text,
+        'text_shadow': text_shadow,
+        'icon_shadow': icon_shadow,
         'is_dark': is_dark,
         'hue': round(h * 360, 1),
+        'hue2': round(h2 * 360, 1),
         'h_val': h,
-        's_val': s
+        's_val': s,
+        'l_val': l_avg,
     }
 
 def generate_gnome_shell_css(palette):
-    """Generate M3 stylesheet for GNOME Shell (Top bar + Overview)."""
+    """Generate M3 Monet Liquid/Frosted Glass stylesheet for GNOME Shell (Top bar + Quick Settings + Popups)."""
     hover_text = palette.get('hover_text', '#ffffff')
-    return f"""/* GNOME Shell Material Design 3 (M3 / Material You) Monet Dynamic Theme */
+    return f"""/* GNOME Shell Material Design 3 (M3) Monet Liquid & Frosted Glass Theme */
 
 .quick-settings .user-icon {{
   icon-size: 5em;
@@ -179,60 +319,88 @@ def generate_gnome_shell_css(palette):
 }}
 
 /* =========================================================
-   1. Main Top Bar: Transparent & Floating
+   1. Main Top Bar: Floating Crystal Container
    ========================================================= */
 #panel {{
   background-color: transparent !important;
+  background-gradient-direction: none !important;
   box-shadow: none !important;
+  border: none !important;
   font-family: 'Google Sans', sans-serif !important;
-  height: 2.5em !important;
+  height: 2.55em !important;
   padding: 4px 8px !important;
-  transition: background-color 280ms cubic-bezier(0.2, 0, 0, 1), box-shadow 280ms ease !important;
+  transition: background-color 260ms cubic-bezier(0.2, 0, 0, 1), box-shadow 260ms ease !important;
 }}
 
+/* Maximized window state: Smoked Monet Glass Top Bar */
 #panel.solid {{
-  background-color: {palette['bg_surface']} !important;
-  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.25) !important;
+  background-color: {palette['panel_solid_bot']} !important;
+  background-gradient-direction: vertical !important;
+  background-gradient-start: {palette['panel_solid_top']} !important;
+  background-gradient-end: {palette['panel_solid_bot']} !important;
+  border-bottom: 1px solid rgba({palette['rim_rgb']}, 0.24) !important;
+  box-shadow: inset 0 1px 1px rgba({palette['specular_rgb']}, 0.22) !important;
 }}
 
-/* 2. Floating Monet Capsule Pills */
+/* =========================================================
+   2. Floating Monet Glass Capsule Pills (Dual-Stop Specular Refraction)
+   ========================================================= */
 #panel .panel-button {{
   background-color: {palette['bg_surface']} !important;
-  border: 1px solid rgba({palette['accent_rgb']}, 0.16) !important;
+  background-gradient-direction: vertical !important;
+  background-gradient-start: {palette['glass_top']} !important;
+  background-gradient-end: {palette['glass_bottom']} !important;
+  border: 1px solid {palette['glass_border']} !important;
   border-radius: 999px !important;
+  box-shadow: {palette['glass_inner_shadow']} !important;
   color: {palette['text_color']} !important;
+  text-shadow: {palette['text_shadow']} !important;
+  icon-shadow: {palette['icon_shadow']} !important;
   font-family: 'Google Sans', sans-serif !important;
-  font-weight: 500 !important;
+  font-weight: 600 !important;
   margin: 2px 4px !important;
-  padding: 0 14px !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25) !important;
-  transition: background-color 260ms cubic-bezier(0.2, 0, 0, 1), border-color 260ms cubic-bezier(0.2, 0, 0, 1), color 260ms ease, box-shadow 260ms ease !important;
+  padding: 0 15px !important;
+  transition: background-color 240ms cubic-bezier(0.2, 0, 0, 1), border-color 240ms cubic-bezier(0.2, 0, 0, 1), color 240ms ease, box-shadow 240ms ease !important;
 }}
 
-/* 3. Pill Hover - Monet Tonal Surface Accent */
+/* 3. Pill Hover - Iridescent Specular Glass Glow */
 #panel .panel-button:focus,
 #panel .panel-button:hover {{
-  background-color: rgba({palette['accent_rgb']}, 0.22) !important;
-  border-color: rgba({palette['accent_rgb']}, 0.55) !important;
+  background-color: {palette['hover_top']} !important;
+  background-gradient-direction: vertical !important;
+  background-gradient-start: {palette['hover_top']} !important;
+  background-gradient-end: {palette['hover_bot']} !important;
+  border-color: rgba({palette['rim_rgb']}, 0.68) !important;
+  box-shadow: inset 0 1px 3px rgba({palette['specular_rgb']}, 0.52) !important;
   color: {hover_text} !important;
-  box-shadow: 0 4px 12px rgba({palette['accent_rgb']}, 0.25) !important;
 }}
 
-/* 4. Pill Active / Clicked */
+/* 4. Pill Active / Checked - Deep Refractive Monet Glass */
 #panel .panel-button:active,
-#panel .panel-button:checked {{
-  background-color: rgba({palette['accent_rgb']}, 0.38) !important;
-  border-color: rgba({palette['accent_rgb']}, 0.75) !important;
+#panel .panel-button:checked,
+#panel .panel-button:overview {{
+  background-color: {palette['active_top']} !important;
+  background-gradient-direction: vertical !important;
+  background-gradient-start: {palette['active_top']} !important;
+  background-gradient-end: {palette['active_bot']} !important;
+  border-color: rgba({palette['rim_rgb']}, 0.85) !important;
+  box-shadow: inset 0 1px 3px rgba(255, 255, 255, 0.55) !important;
   color: {hover_text} !important;
 }}
 
-/* 5. Center Date / Time Indicator */
+/* 5. Center Date / Time & System Status Icons */
 #panel .clock-display {{
-  font-weight: 500 !important;
-  letter-spacing: 0.3px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.35px !important;
 }}
 
-/* 6. M3 Popup Menus & Quick Settings Panel */
+#panel .system-status-icon {{
+  icon-shadow: {palette['icon_shadow']} !important;
+}}
+
+/* =========================================================
+   6. M3 Frosted Glass Popups, Quick Settings & Calendar Cards
+   ========================================================= */
 .popup-menu,
 .popup-menu-boxpointer {{
   background-color: transparent !important;
@@ -242,18 +410,59 @@ def generate_gnome_shell_css(palette):
 }}
 
 .popup-menu-content {{
-  background-color: {palette['bg_solid']} !important;
-  border: 1px solid rgba({palette['accent_rgb']}, 0.25) !important;
+  background-color: {palette['popup_bot']} !important;
+  background-gradient-direction: vertical !important;
+  background-gradient-start: {palette['popup_top']} !important;
+  background-gradient-end: {palette['popup_bot']} !important;
+  border: 1px solid rgba({palette['rim_rgb']}, 0.38) !important;
   border-radius: 26px !important;
-  box-shadow: none !important;
-  padding: 12px !important;
+  box-shadow: inset 0 1px 2px rgba({palette['specular_rgb']}, 0.30) !important;
+  padding: 14px !important;
   color: {palette['text_color']} !important;
   font-family: 'Google Sans', sans-serif !important;
-  transition: background-color 260ms ease, border-color 260ms ease !important;
+  transition: background-color 240ms ease, border-color 240ms ease !important;
 }}
 
 .quick-settings {{
   border-radius: 28px !important;
+}}
+
+/* Quick Settings Toggles & Calendar Cards as Inner Glass Tiles */
+.quick-toggle,
+.quick-menu-toggle .quick-toggle,
+.events-button,
+.world-clocks-button,
+.weather-button,
+.message {{
+  background-color: {palette['card_glass_bot']} !important;
+  background-gradient-direction: vertical !important;
+  background-gradient-start: {palette['card_glass_top']} !important;
+  background-gradient-end: {palette['card_glass_bot']} !important;
+  border: 1px solid rgba({palette['rim_rgb']}, 0.22) !important;
+  box-shadow: inset 0 1px 1px rgba({palette['specular_rgb']}, 0.18) !important;
+  border-radius: 18px !important;
+}}
+
+.quick-toggle:hover,
+.quick-menu-toggle .quick-toggle:hover,
+.events-button:hover,
+.world-clocks-button:hover,
+.weather-button:hover,
+.message:hover {{
+  background-gradient-start: {palette['hover_top']} !important;
+  background-gradient-end: {palette['hover_bot']} !important;
+  border-color: rgba({palette['rim_rgb']}, 0.45) !important;
+}}
+
+.quick-toggle:checked,
+.quick-menu-toggle .quick-toggle:checked {{
+  background-color: {palette['active_top']} !important;
+  background-gradient-direction: vertical !important;
+  background-gradient-start: {palette['active_top']} !important;
+  background-gradient-end: {palette['active_bot']} !important;
+  border: 1px solid rgba({palette['rim_rgb']}, 0.72) !important;
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.42) !important;
+  color: {hover_text} !important;
 }}
 
 .popup-menu-content .popup-menu-item {{
@@ -264,7 +473,7 @@ def generate_gnome_shell_css(palette):
 
 .popup-menu-content .popup-menu-item:hover,
 .popup-menu-content .popup-menu-item:focus {{
-  background-color: rgba({palette['accent_rgb']}, 0.18) !important;
+  background-color: rgba({palette['accent_rgb']}, 0.22) !important;
   color: {hover_text} !important;
 }}
 """
@@ -508,11 +717,29 @@ def reload_shell_stylesheet():
 
         # If in-process St.Theme hot-reload monitor is active in extension.js, no D-Bus toggle needed
         runtime_dir = os.environ.get('XDG_RUNTIME_DIR') or f"/run/user/{os.getuid()}"
-        if os.path.exists(os.path.join(runtime_dir, 'live-wallpaper-occluded')):
+        if (
+            os.path.exists(os.path.join(runtime_dir, 'monet-hot-reload-active'))
+            or os.path.exists(os.path.join(runtime_dir, 'live-wallpaper-occluded'))
+        ):
             return
 
-        # Otherwise perform fast direct D-Bus toggle without subprocess overhead or artificial sleep
         bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        # Check if GNOME Shell is actually running on the session bus before calling Extensions D-Bus
+        has_owner = bus.call_sync(
+            'org.freedesktop.DBus',
+            '/org/freedesktop/DBus',
+            'org.freedesktop.DBus',
+            'NameHasOwner',
+            GLib.Variant('(s)', ('org.gnome.Shell',)),
+            GLib.VariantType.new('(b)'),
+            Gio.DBusCallFlags.NONE,
+            500,
+            None,
+        )
+        if not has_owner or not has_owner.unpack()[0]:
+            # GNOME Shell is still starting up; it will load stylesheet.css automatically upon extension init
+            return
+
         bus.call_sync(
             'org.gnome.Shell.Extensions',
             '/org/gnome/Shell/Extensions',
