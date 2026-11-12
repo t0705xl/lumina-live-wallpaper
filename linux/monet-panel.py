@@ -192,65 +192,74 @@ def extract_palette(image_path, scheme='prefer-dark'):
 
     if is_dark:
         # Dark Mode Ultra-Clear Crystal Liquid Glass (极清超晶流光液态玻璃)
-        # Uniform, hyper-transparent crystal glass with ZERO muddy gradient band across text content
-        glass_pill_bg = f"rgba({rgb_str(h, 0.15, min(s * 0.60, 0.30))}, 0.12)"
-        glass_pill_border = "rgba(255, 255, 255, 0.24)"
-        glass_pill_shadow = "0 3px 12px rgba(0, 0, 0, 0.22)"
+        # Highly translucent, luminous crystal glass allowing dynamic wallpaper to shine clearly through
+        glass_pill_bg = f"rgba({rgb_str(h, 0.20, min(s * 0.50, 0.28))}, 0.16)"
+        glass_pill_border = "rgba(255, 255, 255, 0.28)"
+        glass_pill_shadow = "none"
 
         # Maximized panel (#panel.solid) ultra-clean smoked crystal
-        panel_solid_top = f"rgba({rgb_str(h, 0.10, min(s * 0.50, 0.22))}, 0.48)"
-        panel_solid_bot = f"rgba({rgb_str(h, 0.07, min(s * 0.45, 0.18))}, 0.36)"
+        panel_solid_top = f"rgba({rgb_str(h, 0.14, min(s * 0.40, 0.22))}, 0.42)"
+        panel_solid_bot = f"rgba({rgb_str(h, 0.10, min(s * 0.35, 0.18))}, 0.32)"
 
         # Hover & Active fluid states
-        hover_pill_bg = "rgba(255, 255, 255, 0.20)"
-        hover_pill_border = "rgba(255, 255, 255, 0.48)"
-        hover_pill_shadow = "0 4px 18px rgba(0, 0, 0, 0.32)"
+        hover_pill_bg = "rgba(255, 255, 255, 0.24)"
+        hover_pill_border = "rgba(255, 255, 255, 0.55)"
+        hover_pill_shadow = "none"
 
-        active_pill_bg = f"rgba({rgb_str(h, 0.70, min(s * 1.10, 0.75))}, 0.28)"
-        active_pill_border = f"rgba({rgb_str(h, 0.85, min(s * 1.10, 0.75))}, 0.65)"
-        active_pill_shadow = f"0 0 18px rgba({rgb_str(h, 0.75, min(s, 0.70))}, 0.38)"
+        active_pill_bg = f"rgba({rgb_str(h, 0.72, min(s * 1.15, 0.80))}, 0.38)"
+        active_pill_border = f"rgba({rgb_str(h, 0.88, min(s * 1.15, 0.80))}, 0.75)"
+        active_pill_shadow = "none"
 
-        # Popup menu & Quick Settings crystal glass
-        popup_top = f"rgba({rgb_str(h, 0.14, min(s * 0.65, 0.35))}, 0.84)"
-        popup_bot = f"rgba({rgb_str(h, 0.08, min(s * 0.55, 0.25))}, 0.76)"
-        card_glass_top = "rgba(255, 255, 255, 0.12)"
-        card_glass_bot = f"rgba({rgb_str(h, 0.14, min(s * 0.50, 0.25))}, 0.18)"
+        # Popup menu & Quick Settings crystal glass (超晶流光液态玻璃：高透光率 0.45、绝不死黑)
+        popup_bg = f"rgba({rgb_str(h, 0.18, min(s * 0.45, 0.22))}, 0.45)"
+        popup_border = "rgba(255, 255, 255, 0.26)"
+
+        # High-contrast luminous glass tiles inside popups (浮雕微光卡片，晶莹清晰)
+        card_glass_bg = "rgba(255, 255, 255, 0.12)"
+        card_glass_border = "rgba(255, 255, 255, 0.22)"
+        card_hover_bg = "rgba(255, 255, 255, 0.22)"
+        card_hover_border = "rgba(255, 255, 255, 0.45)"
 
         bg_surface = glass_pill_bg
-        bg_solid = popup_top
-        bg_overview = f"rgba({rgb_str(h, 0.08, min(s * 0.5, 0.20))}, 0.32)"
+        bg_solid = popup_bg
+        bg_overview = f"rgba({rgb_str(h, 0.10, min(s * 0.4, 0.20))}, 0.28)"
 
         accent_rgb = rgb_str(h, 0.78, min(s * 1.15, 0.76))
         text_color = "#FFFFFF"
+        subtitle_color = "rgba(255, 255, 255, 0.82)"
         hover_text = "#FFFFFF"
     else:
         # Light Mode Ultra-Clear Crystal Liquid Glass (极清晶润微光玻璃)
-        glass_pill_bg = "rgba(255, 255, 255, 0.40)"
-        glass_pill_border = "rgba(255, 255, 255, 0.75)"
-        glass_pill_shadow = "0 3px 10px rgba(0, 0, 0, 0.08)"
+        glass_pill_bg = "rgba(255, 255, 255, 0.45)"
+        glass_pill_border = "rgba(255, 255, 255, 0.80)"
+        glass_pill_shadow = "none"
 
-        panel_solid_top = f"rgba({rgb_str(h, 0.96, min(s * 0.40, 0.22))}, 0.75)"
-        panel_solid_bot = f"rgba({rgb_str(h, 0.90, min(s * 0.50, 0.28))}, 0.62)"
+        panel_solid_top = f"rgba({rgb_str(h, 0.96, min(s * 0.35, 0.20))}, 0.70)"
+        panel_solid_bot = f"rgba({rgb_str(h, 0.90, min(s * 0.40, 0.25))}, 0.58)"
 
-        hover_pill_bg = "rgba(255, 255, 255, 0.60)"
+        hover_pill_bg = "rgba(255, 255, 255, 0.65)"
         hover_pill_border = "rgba(255, 255, 255, 0.95)"
-        hover_pill_shadow = "0 4px 16px rgba(0, 0, 0, 0.14)"
+        hover_pill_shadow = "none"
 
         active_pill_bg = f"rgba({rgb_str(h, 0.45, min(s * 1.10, 0.75))}, 0.35)"
         active_pill_border = f"rgba({rgb_str(h, 0.45, min(s * 1.10, 0.75))}, 0.75)"
-        active_pill_shadow = f"0 0 16px rgba({rgb_str(h, 0.45, min(s, 0.70))}, 0.30)"
+        active_pill_shadow = "none"
 
-        popup_top = f"rgba({rgb_str(h, 0.98, min(s * 0.40, 0.25))}, 0.90)"
-        popup_bot = f"rgba({rgb_str(h, 0.92, min(s * 0.50, 0.30))}, 0.82)"
-        card_glass_top = "rgba(255, 255, 255, 0.75)"
-        card_glass_bot = f"rgba({rgb_str(h, 0.94, min(s * 0.45, 0.25))}, 0.42)"
+        popup_bg = f"rgba({rgb_str(h, 0.95, min(s * 0.35, 0.20))}, 0.65)"
+        popup_border = "rgba(255, 255, 255, 0.85)"
+
+        card_glass_bg = "rgba(255, 255, 255, 0.65)"
+        card_glass_border = "rgba(255, 255, 255, 0.90)"
+        card_hover_bg = "rgba(255, 255, 255, 0.85)"
+        card_hover_border = "rgba(255, 255, 255, 0.98)"
 
         bg_surface = glass_pill_bg
-        bg_solid = popup_top
+        bg_solid = popup_bg
         bg_overview = f"rgba({rgb_str(h, 0.96, min(s * 0.3, 0.20))}, 0.30)"
 
         accent_rgb = rgb_str(h, 0.42, min(s * 1.15, 0.78))
         text_color = f"rgb({rgb_str(h, 0.12, min(s, 0.20))})"
+        subtitle_color = f"rgba({rgb_str(h, 0.18, min(s, 0.20))}, 0.78)"
         hover_text = text_color
 
     return {
@@ -268,12 +277,15 @@ def extract_palette(image_path, scheme='prefer-dark'):
         'active_pill_bg': active_pill_bg,
         'active_pill_border': active_pill_border,
         'active_pill_shadow': active_pill_shadow,
-        'popup_top': popup_top,
-        'popup_bot': popup_bot,
-        'card_glass_top': card_glass_top,
-        'card_glass_bot': card_glass_bot,
+        'popup_bg': popup_bg,
+        'popup_border': popup_border,
+        'card_glass_bg': card_glass_bg,
+        'card_glass_border': card_glass_border,
+        'card_hover_bg': card_hover_bg,
+        'card_hover_border': card_hover_border,
         'accent_rgb': accent_rgb,
         'text_color': text_color,
+        'subtitle_color': subtitle_color,
         'hover_text': hover_text,
         'is_dark': is_dark,
         'hue': round(h * 360, 1),
@@ -323,7 +335,7 @@ def generate_gnome_shell_css(palette):
   background-gradient-start: {palette['panel_solid_top']} !important;
   background-gradient-end: {palette['panel_solid_bot']} !important;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28) !important;
+  box-shadow: none !important;
 }}
 
 /* =========================================================
@@ -335,7 +347,7 @@ def generate_gnome_shell_css(palette):
   background-gradient-direction: none !important;
   border: 1px solid {palette['glass_pill_border']} !important;
   border-radius: 999px !important;
-  box-shadow: {palette['glass_pill_shadow']} !important;
+  box-shadow: none !important;
   color: {palette['text_color']} !important;
   text-shadow: none !important;
   icon-shadow: none !important;
@@ -352,7 +364,7 @@ def generate_gnome_shell_css(palette):
   background-color: {palette['hover_pill_bg']} !important;
   background-gradient-direction: none !important;
   border-color: {palette['hover_pill_border']} !important;
-  box-shadow: {palette['hover_pill_shadow']} !important;
+  box-shadow: none !important;
   color: {hover_text} !important;
 }}
 
@@ -363,7 +375,7 @@ def generate_gnome_shell_css(palette):
   background-color: {palette['active_pill_bg']} !important;
   background-gradient-direction: none !important;
   border-color: {palette['active_pill_border']} !important;
-  box-shadow: {palette['active_pill_shadow']} !important;
+  box-shadow: none !important;
   color: {hover_text} !important;
 }}
 
@@ -383,20 +395,26 @@ def generate_gnome_shell_css(palette):
       (ZERO rectangular shadow halo, seamless organic rounded borders)
    ========================================================= */
 .popup-menu,
-.popup-menu-boxpointer {{
+.popup-menu-boxpointer,
+.candidate-popup-boxpointer {{
   background-color: transparent !important;
   background: none !important;
   box-shadow: none !important;
   border: none !important;
   -arrow-rise: 0px !important;
+  -arrow-border-width: 0px !important;
+  -arrow-border-radius: 0px !important;
+  -arrow-base: 0px !important;
+  -arrow-background-color: transparent !important;
+  -arrow-border-color: transparent !important;
+  -boxpointer-gap: 0px !important;
 }}
 
-.popup-menu-content {{
-  background-color: {palette['popup_bot']} !important;
-  background-gradient-direction: vertical !important;
-  background-gradient-start: {palette['popup_top']} !important;
-  background-gradient-end: {palette['popup_bot']} !important;
-  border: 1px solid rgba(255, 255, 255, 0.20) !important;
+.popup-menu-content,
+.candidate-popup-content {{
+  background-color: {palette['popup_bg']} !important;
+  background-gradient-direction: none !important;
+  border: 1px solid {palette['popup_border']} !important;
   border-radius: 28px !important;
   box-shadow: none !important;
   padding: 14px !important;
@@ -406,6 +424,8 @@ def generate_gnome_shell_css(palette):
 }}
 
 .quick-settings,
+.quick-settings-menu,
+.quick-settings-grid,
 .datemenu-popover {{
   border-radius: 28px !important;
   box-shadow: none !important;
@@ -417,11 +437,9 @@ def generate_gnome_shell_css(palette):
    ========================================================= */
 /* Single standalone toggle (Night Light, Dark Style, Airplane Mode) */
 .quick-toggle {{
-  background-color: {palette['card_glass_bot']} !important;
-  background-gradient-direction: vertical !important;
-  background-gradient-start: {palette['card_glass_top']} !important;
-  background-gradient-end: {palette['card_glass_bot']} !important;
-  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  background-color: {palette['card_glass_bg']} !important;
+  background-gradient-direction: none !important;
+  border: 1px solid {palette['card_glass_border']} !important;
   border-radius: 22px !important;
   box-shadow: none !important;
   color: {palette['text_color']} !important;
@@ -429,9 +447,9 @@ def generate_gnome_shell_css(palette):
 }}
 
 .quick-toggle:hover {{
-  background-gradient-start: {palette['hover_pill_bg']} !important;
-  background-gradient-end: {palette['hover_pill_bg']} !important;
-  border-color: rgba(255, 255, 255, 0.40) !important;
+  background-color: {palette['card_hover_bg']} !important;
+  background-gradient-direction: none !important;
+  border-color: {palette['card_hover_border']} !important;
   box-shadow: none !important;
 }}
 
@@ -445,11 +463,9 @@ def generate_gnome_shell_css(palette):
 
 /* Compound container (e.g. Wi-Fi: [ Wi-Fi Network Name | > ]) */
 .quick-toggle-has-menu {{
-  background-color: {palette['card_glass_bot']} !important;
-  background-gradient-direction: vertical !important;
-  background-gradient-start: {palette['card_glass_top']} !important;
-  background-gradient-end: {palette['card_glass_bot']} !important;
-  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  background-color: {palette['card_glass_bg']} !important;
+  background-gradient-direction: none !important;
+  border: 1px solid {palette['card_glass_border']} !important;
   border-radius: 22px !important;
   box-shadow: none !important;
   padding: 0 !important;
@@ -457,9 +473,8 @@ def generate_gnome_shell_css(palette):
 }}
 
 .quick-toggle-has-menu:hover {{
-  background-gradient-start: {palette['hover_pill_bg']} !important;
-  background-gradient-end: {palette['hover_pill_bg']} !important;
-  border-color: rgba(255, 255, 255, 0.40) !important;
+  background-color: {palette['card_hover_bg']} !important;
+  border-color: {palette['card_hover_border']} !important;
 }}
 
 .quick-toggle-has-menu:checked {{
@@ -496,17 +511,13 @@ def generate_gnome_shell_css(palette):
   color: {hover_text} !important;
 }}
 
-/* Rounded, soft micro-pill separator between toggle and '>' arrow (no more stiff vertical line) */
+/* Soft, seamless transition between toggle and '>' arrow - remove rigid vertical bar */
 .quick-toggle-has-menu .quick-toggle-separator {{
-  width: 1.5px !important;
-  min-width: 1.5px !important;
-  margin: 10px 1px !important;
-  border-radius: 999px !important;
-  background-color: rgba(255, 255, 255, 0.20) !important;
-}}
-
-.quick-toggle-has-menu:checked .quick-toggle-separator {{
-  background-color: rgba(255, 255, 255, 0.35) !important;
+  width: 0px !important;
+  min-width: 0px !important;
+  margin: 0 !important;
+  background-color: transparent !important;
+  border: none !important;
 }}
 
 /* Right '>' menu expand button */
@@ -538,16 +549,37 @@ def generate_gnome_shell_css(palette):
   color: {hover_text} !important;
 }}
 
+/* Titles and subtitles inside quick toggles */
+.quick-toggle .quick-toggle-title,
+.quick-toggle-has-menu .quick-toggle-title {{
+  font-weight: 600 !important;
+  color: {palette['text_color']} !important;
+}}
+
+.quick-toggle .quick-toggle-subtitle,
+.quick-toggle-has-menu .quick-toggle-subtitle {{
+  font-weight: 400 !important;
+  color: {palette['subtitle_color']} !important;
+}}
+
+.quick-toggle:checked .quick-toggle-title,
+.quick-toggle-has-menu:checked .quick-toggle-title {{
+  color: {hover_text} !important;
+}}
+
+.quick-toggle:checked .quick-toggle-subtitle,
+.quick-toggle-has-menu:checked .quick-toggle-subtitle {{
+  color: rgba(255, 255, 255, 0.88) !important;
+}}
+
 /* =========================================================
    8. Quick Settings Submenu Dropdown (Wi-Fi Networks / Bluetooth Devices)
       Smooth Crystal Glass Dropdown with Organic Rounded Corners
    ========================================================= */
 .quick-toggle-menu {{
-  background-color: {palette['card_glass_bot']} !important;
-  background-gradient-direction: vertical !important;
-  background-gradient-start: {palette['card_glass_top']} !important;
-  background-gradient-end: {palette['card_glass_bot']} !important;
-  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  background-color: {palette['card_glass_bg']} !important;
+  background-gradient-direction: none !important;
+  border: 1px solid {palette['card_glass_border']} !important;
   border-radius: 24px !important;
   box-shadow: none !important;
   margin: 10px 4px 6px !important;
@@ -567,7 +599,7 @@ def generate_gnome_shell_css(palette):
 }}
 
 .quick-toggle-menu .header .subtitle {{
-  color: rgba(255, 255, 255, 0.70) !important;
+  color: {palette['subtitle_color']} !important;
 }}
 
 .quick-toggle-menu .header .icon {{
@@ -599,11 +631,9 @@ def generate_gnome_shell_css(palette):
    9. Quick Settings Sliders (Brightness, Audio Volume)
    ========================================================= */
 .quick-slider {{
-  background-color: {palette['card_glass_bot']} !important;
-  background-gradient-direction: vertical !important;
-  background-gradient-start: {palette['card_glass_top']} !important;
-  background-gradient-end: {palette['card_glass_bot']} !important;
-  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  background-color: {palette['card_glass_bg']} !important;
+  background-gradient-direction: none !important;
+  border: 1px solid {palette['card_glass_border']} !important;
   border-radius: 22px !important;
   box-shadow: none !important;
   padding: 4px 8px !important;
@@ -616,22 +646,20 @@ def generate_gnome_shell_css(palette):
 .world-clocks-button,
 .weather-button,
 .message {{
-  background-color: {palette['card_glass_bot']} !important;
-  background-gradient-direction: vertical !important;
-  background-gradient-start: {palette['card_glass_top']} !important;
-  background-gradient-end: {palette['card_glass_bot']} !important;
-  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  background-color: {palette['card_glass_bg']} !important;
+  background-gradient-direction: none !important;
+  border: 1px solid {palette['card_glass_border']} !important;
   box-shadow: none !important;
   border-radius: 20px !important;
+  color: {palette['text_color']} !important;
 }}
 
 .events-button:hover,
 .world-clocks-button:hover,
 .weather-button:hover,
 .message:hover {{
-  background-gradient-start: {palette['hover_pill_bg']} !important;
-  background-gradient-end: {palette['hover_pill_bg']} !important;
-  border-color: rgba(255, 255, 255, 0.36) !important;
+  background-color: {palette['card_hover_bg']} !important;
+  border-color: {palette['card_hover_border']} !important;
   box-shadow: none !important;
 }}
 
@@ -913,8 +941,8 @@ def reload_shell_stylesheet():
             return
 
         bus.call_sync(
-            'org.gnome.Shell.Extensions',
-            '/org/gnome/Shell/Extensions',
+            'org.gnome.Shell',
+            '/org/gnome/Shell',
             'org.gnome.Shell.Extensions',
             'DisableExtension',
             GLib.Variant('(s)', (EXTENSION_UUID,)),
@@ -924,8 +952,8 @@ def reload_shell_stylesheet():
             None,
         )
         bus.call_sync(
-            'org.gnome.Shell.Extensions',
-            '/org/gnome/Shell/Extensions',
+            'org.gnome.Shell',
+            '/org/gnome/Shell',
             'org.gnome.Shell.Extensions',
             'EnableExtension',
             GLib.Variant('(s)', (EXTENSION_UUID,)),

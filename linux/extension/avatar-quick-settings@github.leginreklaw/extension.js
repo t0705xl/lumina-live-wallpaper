@@ -71,9 +71,14 @@ export default class QuickSettingsAvatarExtension extends Extension {
             this._occlusionIdleId = 0;
         }
 
-        if (this._cssMonitor) {
-            this._cssMonitor.cancel();
-            this._cssMonitor = null;
+        if (this._cssDirMonitor) {
+            this._cssDirMonitor.cancel();
+            this._cssDirMonitor = null;
+        }
+
+        if (this._cssFileMonitor) {
+            this._cssFileMonitor.cancel();
+            this._cssFileMonitor = null;
         }
 
         for (const marker of ['monet-hot-reload-active', 'live-wallpaper-occluded']) {
@@ -96,16 +101,7 @@ export default class QuickSettingsAvatarExtension extends Extension {
             ]);
             GLib.file_set_contents(markerPath, '1');
 
-            this._cssMonitor = this.dir.monitor_directory(
-                Gio.FileMonitorFlags.WATCH_MOVES,
-                null
-            );
-            this._cssMonitor.connect('changed', (_mon, file, otherFile, eventType) => {
-                const name = file?.get_basename() ?? '';
-                const otherName = otherFile?.get_basename() ?? '';
-                if (name !== 'stylesheet.css' && otherName !== 'stylesheet.css')
-                    return;
-
+            const triggerReload = () => {
                 if (this._cssReloadIdleId)
                     GLib.source_remove(this._cssReloadIdleId);
 
@@ -114,6 +110,27 @@ export default class QuickSettingsAvatarExtension extends Extension {
                     this._reloadStylesheetSeamless();
                     return GLib.SOURCE_REMOVE;
                 });
+            };
+
+            // Monitor both directory (for atomic renames) and the css file directly (for in-place writes)
+            this._cssDirMonitor = this.dir.monitor_directory(
+                Gio.FileMonitorFlags.NONE,
+                null
+            );
+            this._cssDirMonitor.connect('changed', (_mon, file, otherFile, _event) => {
+                const name = file?.get_basename() ?? '';
+                const otherName = otherFile?.get_basename() ?? '';
+                if (name === 'stylesheet.css' || otherName === 'stylesheet.css')
+                    triggerReload();
+            });
+
+            const cssFile = this.dir.get_child('stylesheet.css');
+            this._cssFileMonitor = cssFile.monitor_file(
+                Gio.FileMonitorFlags.NONE,
+                null
+            );
+            this._cssFileMonitor.connect('changed', (_mon, _file, _otherFile, _event) => {
+                triggerReload();
             });
         } catch (e) {
             logError(e, `${this.metadata.name}: failed to setup CSS hot reload`);
@@ -131,11 +148,21 @@ export default class QuickSettingsAvatarExtension extends Extension {
             if (!theme)
                 return;
 
-            if (this.stylesheet)
+            const ext = Main.extensionManager?.lookup(this.uuid);
+            if (ext?.stylesheet) {
+                theme.unload_stylesheet(ext.stylesheet);
+                delete ext.stylesheet;
+            }
+            if (this.stylesheet) {
                 theme.unload_stylesheet(this.stylesheet);
+                delete this.stylesheet;
+            }
 
             theme.load_stylesheet(cssFile);
             this.stylesheet = cssFile;
+            if (ext)
+                ext.stylesheet = cssFile;
+            log(`${this.metadata.name}: Hot reloaded stylesheet.css successfully`);
         } catch (e) {
             logError(e, `${this.metadata.name}: failed to reload stylesheet`);
         }
