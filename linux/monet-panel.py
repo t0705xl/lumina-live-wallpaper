@@ -379,7 +379,8 @@ def generate_gnome_shell_css(palette):
 }}
 
 /* =========================================================
-   6. Ultra-Clear Frosted Glass Popups, Quick Settings & Cards
+   6. Ultra-Clear Frosted Glass Popups & Menus
+      (ZERO rectangular shadow halo, seamless organic rounded borders)
    ========================================================= */
 .popup-menu,
 .popup-menu-boxpointer {{
@@ -387,6 +388,7 @@ def generate_gnome_shell_css(palette):
   background: none !important;
   box-shadow: none !important;
   border: none !important;
+  -arrow-rise: 0px !important;
 }}
 
 .popup-menu-content {{
@@ -394,22 +396,222 @@ def generate_gnome_shell_css(palette):
   background-gradient-direction: vertical !important;
   background-gradient-start: {palette['popup_top']} !important;
   background-gradient-end: {palette['popup_bot']} !important;
-  border: 1px solid rgba(255, 255, 255, 0.18) !important;
-  border-radius: 26px !important;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.38) !important;
+  border: 1px solid rgba(255, 255, 255, 0.20) !important;
+  border-radius: 28px !important;
+  box-shadow: none !important;
   padding: 14px !important;
   color: {palette['text_color']} !important;
   font-family: 'Google Sans', sans-serif !important;
   transition: background-color 200ms ease, border-color 200ms ease !important;
 }}
 
-.quick-settings {{
+.quick-settings,
+.datemenu-popover {{
   border-radius: 28px !important;
+  box-shadow: none !important;
 }}
 
-/* Quick Settings Toggles & Calendar Cards as Inner Glass Tiles */
-.quick-toggle,
-.quick-menu-toggle .quick-toggle,
+/* =========================================================
+   7. Quick Settings Compound Toggles (Wi-Fi, Bluetooth, Audio)
+      Integrated, Seamless & Soft Organic Capsule
+   ========================================================= */
+/* Single standalone toggle (Night Light, Dark Style, Airplane Mode) */
+.quick-toggle {{
+  background-color: {palette['card_glass_bot']} !important;
+  background-gradient-direction: vertical !important;
+  background-gradient-start: {palette['card_glass_top']} !important;
+  background-gradient-end: {palette['card_glass_bot']} !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  border-radius: 22px !important;
+  box-shadow: none !important;
+  color: {palette['text_color']} !important;
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+}}
+
+.quick-toggle:hover {{
+  background-gradient-start: {palette['hover_pill_bg']} !important;
+  background-gradient-end: {palette['hover_pill_bg']} !important;
+  border-color: rgba(255, 255, 255, 0.40) !important;
+  box-shadow: none !important;
+}}
+
+.quick-toggle:checked {{
+  background-color: {palette['active_pill_bg']} !important;
+  background-gradient-direction: none !important;
+  border: 1px solid {palette['active_pill_border']} !important;
+  box-shadow: none !important;
+  color: {hover_text} !important;
+}}
+
+/* Compound container (e.g. Wi-Fi: [ Wi-Fi Network Name | > ]) */
+.quick-toggle-has-menu {{
+  background-color: {palette['card_glass_bot']} !important;
+  background-gradient-direction: vertical !important;
+  background-gradient-start: {palette['card_glass_top']} !important;
+  background-gradient-end: {palette['card_glass_bot']} !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  border-radius: 22px !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+}}
+
+.quick-toggle-has-menu:hover {{
+  background-gradient-start: {palette['hover_pill_bg']} !important;
+  background-gradient-end: {palette['hover_pill_bg']} !important;
+  border-color: rgba(255, 255, 255, 0.40) !important;
+}}
+
+.quick-toggle-has-menu:checked {{
+  background-color: {palette['active_pill_bg']} !important;
+  background-gradient-direction: none !important;
+  border-color: {palette['active_pill_border']} !important;
+}}
+
+/* Left toggle portion inside compound button */
+.quick-toggle-has-menu .quick-toggle {{
+  background-color: transparent !important;
+  background-gradient-direction: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 22px 0 0 22px !important;
+  color: {palette['text_color']} !important;
+  transition: background-color 150ms ease !important;
+}}
+
+.quick-toggle-has-menu .quick-toggle:rtl {{
+  border-radius: 0 22px 22px 0 !important;
+}}
+
+.quick-toggle-has-menu .quick-toggle:hover {{
+  background-color: rgba(255, 255, 255, 0.12) !important;
+  border: none !important;
+  box-shadow: none !important;
+}}
+
+.quick-toggle-has-menu .quick-toggle:checked {{
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: {hover_text} !important;
+}}
+
+/* Rounded, soft micro-pill separator between toggle and '>' arrow (no more stiff vertical line) */
+.quick-toggle-has-menu .quick-toggle-separator {{
+  width: 1.5px !important;
+  min-width: 1.5px !important;
+  margin: 10px 1px !important;
+  border-radius: 999px !important;
+  background-color: rgba(255, 255, 255, 0.20) !important;
+}}
+
+.quick-toggle-has-menu:checked .quick-toggle-separator {{
+  background-color: rgba(255, 255, 255, 0.35) !important;
+}}
+
+/* Right '>' menu expand button */
+.quick-toggle-has-menu .quick-toggle-menu-button {{
+  background-color: transparent !important;
+  background-gradient-direction: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 22px 22px 0 !important;
+  color: {palette['text_color']} !important;
+  padding: 0 14px !important;
+  transition: background-color 150ms ease, color 150ms ease !important;
+}}
+
+.quick-toggle-has-menu .quick-toggle-menu-button:rtl {{
+  border-radius: 22px 0 0 22px !important;
+}}
+
+.quick-toggle-has-menu .quick-toggle-menu-button:hover,
+.quick-toggle-has-menu .quick-toggle-menu-button:focus {{
+  background-color: rgba(255, 255, 255, 0.18) !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: #FFFFFF !important;
+}}
+
+.quick-toggle-has-menu .quick-toggle-menu-button:checked {{
+  background-color: transparent !important;
+  color: {hover_text} !important;
+}}
+
+/* =========================================================
+   8. Quick Settings Submenu Dropdown (Wi-Fi Networks / Bluetooth Devices)
+      Smooth Crystal Glass Dropdown with Organic Rounded Corners
+   ========================================================= */
+.quick-toggle-menu {{
+  background-color: {palette['card_glass_bot']} !important;
+  background-gradient-direction: vertical !important;
+  background-gradient-start: {palette['card_glass_top']} !important;
+  background-gradient-end: {palette['card_glass_bot']} !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  border-radius: 24px !important;
+  box-shadow: none !important;
+  margin: 10px 4px 6px !important;
+  padding: 14px 16px !important;
+  color: {palette['text_color']} !important;
+}}
+
+.quick-toggle-menu .header {{
+  padding-bottom: 12px !important;
+  spacing-rows: 4px !important;
+  spacing-columns: 12px !important;
+}}
+
+.quick-toggle-menu .header .title {{
+  font-weight: 700 !important;
+  color: {palette['text_color']} !important;
+}}
+
+.quick-toggle-menu .header .subtitle {{
+  color: rgba(255, 255, 255, 0.70) !important;
+}}
+
+.quick-toggle-menu .header .icon {{
+  border-radius: 999px !important;
+  padding: 8px !important;
+  background-color: rgba(255, 255, 255, 0.12) !important;
+}}
+
+.quick-toggle-menu .header .icon.active {{
+  background-color: {palette['active_pill_bg']} !important;
+  color: #FFFFFF !important;
+}}
+
+.quick-toggle-menu .popup-menu-item {{
+  border-radius: 14px !important;
+  padding: 8px 12px !important;
+  margin: 2px 0 !important;
+  transition: background-color 150ms ease !important;
+}}
+
+.quick-toggle-menu .popup-menu-item:hover,
+.quick-toggle-menu .popup-menu-item:focus,
+.quick-toggle-menu .popup-menu-item:selected {{
+  background-color: rgba({palette['accent_rgb']}, 0.22) !important;
+  color: {hover_text} !important;
+}}
+
+/* =========================================================
+   9. Quick Settings Sliders (Brightness, Audio Volume)
+   ========================================================= */
+.quick-slider {{
+  background-color: {palette['card_glass_bot']} !important;
+  background-gradient-direction: vertical !important;
+  background-gradient-start: {palette['card_glass_top']} !important;
+  background-gradient-end: {palette['card_glass_bot']} !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  border-radius: 22px !important;
+  box-shadow: none !important;
+  padding: 4px 8px !important;
+}}
+
+/* =========================================================
+   10. Calendar, Messages & Notification Cards
+   ========================================================= */
 .events-button,
 .world-clocks-button,
 .weather-button,
@@ -418,31 +620,22 @@ def generate_gnome_shell_css(palette):
   background-gradient-direction: vertical !important;
   background-gradient-start: {palette['card_glass_top']} !important;
   background-gradient-end: {palette['card_glass_bot']} !important;
-  border: 1px solid rgba(255, 255, 255, 0.14) !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12) !important;
-  border-radius: 18px !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  box-shadow: none !important;
+  border-radius: 20px !important;
 }}
 
-.quick-toggle:hover,
-.quick-menu-toggle .quick-toggle:hover,
 .events-button:hover,
 .world-clocks-button:hover,
 .weather-button:hover,
 .message:hover {{
   background-gradient-start: {palette['hover_pill_bg']} !important;
   background-gradient-end: {palette['hover_pill_bg']} !important;
-  border-color: rgba(255, 255, 255, 0.35) !important;
+  border-color: rgba(255, 255, 255, 0.36) !important;
+  box-shadow: none !important;
 }}
 
-.quick-toggle:checked,
-.quick-menu-toggle .quick-toggle:checked {{
-  background-color: {palette['active_pill_bg']} !important;
-  background-gradient-direction: none !important;
-  border: 1px solid {palette['active_pill_border']} !important;
-  box-shadow: {palette['active_pill_shadow']} !important;
-  color: {hover_text} !important;
-}}
-
+/* General Popup Menu Items */
 .popup-menu-content .popup-menu-item {{
   border-radius: 14px !important;
   margin: 1px 0 !important;
@@ -450,7 +643,8 @@ def generate_gnome_shell_css(palette):
 }}
 
 .popup-menu-content .popup-menu-item:hover,
-.popup-menu-content .popup-menu-item:focus {{
+.popup-menu-content .popup-menu-item:focus,
+.popup-menu-content .popup-menu-item:selected {{
   background-color: rgba({palette['accent_rgb']}, 0.22) !important;
   color: {hover_text} !important;
 }}
