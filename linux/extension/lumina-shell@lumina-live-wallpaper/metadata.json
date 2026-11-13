@@ -1,0 +1,15 @@
+{
+  "description": "Lumina liquid-glass top bar, quick settings and dock, Monet stylesheet hot-reload, wallpaper in the overview and live-wallpaper occlusion tracking. Grew out of Avatar Quick Settings by leginreklaw (GPL-2.0-or-later), whose user avatar in quick settings it keeps.",
+  "name": "Lumina Shell",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50"
+  ],
+  "url": "https://github.com/t0705xl/lumina-live-wallpaper",
+  "uuid": "lumina-shell@lumina-live-wallpaper",
+  "version": 1
+}

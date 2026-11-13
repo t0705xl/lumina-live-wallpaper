@@ -1,0 +1,15 @@
+[Unit]
+Description=Lumina: move the shell extension to its own UUID before GNOME Shell starts
+DefaultDependencies=no
+Before=graphical-session-pre.target
+ConditionPathExists=%h/.local/share/gnome-shell/extensions/avatar-quick-settings@github.leginreklaw/glass.js
+
+[Service]
+Type=oneshot
+TimeoutStartSec=15
+ExecStart=%h/.local/bin/lumina-migrate-uuid
+# One-shot: once it has run, drop out of the login sequence.
+ExecStartPost=-/usr/bin/systemctl --user --no-reload disable lumina-migrate-uuid.service
+
+[Install]
+WantedBy=graphical-session-pre.target

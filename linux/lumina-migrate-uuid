@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# One-time move of the Lumina shell extension off the UUID it was first developed under,
+# avatar-quick-settings@github.leginreklaw. That is a real extensions.gnome.org extension, so an
+# online update could overwrite our code with the original at any time.
+#
+# Runs from lumina-migrate-uuid.service before GNOME Shell starts, so the shell never loads both
+# copies and nothing has to be reloaded live. Safe to run again: it does nothing once the old
+# directory no longer holds our code (glass.js), and leaves a genuine Avatar Quick Settings alone.
+set -euo pipefail
+
+OLD=avatar-quick-settings@github.leginreklaw
+NEW=lumina-shell@lumina-live-wallpaper
+EXT_ROOT="$HOME/.local/share/gnome-shell/extensions"
+BACKUP="$HOME/.local/share/lumina-backup/$(date +%F)-old-uuid"
+
+[ -f "$EXT_ROOT/$OLD/glass.js" ] || { echo "lumina-migrate-uuid: nothing to move"; exit 0; }
+[ -f "$EXT_ROOT/$NEW/extension.js" ] || { echo "lumina-migrate-uuid: $NEW is not installed, keeping $OLD" >&2; exit 1; }
+
+# Swap the UUIDs in enabled-extensions (and make sure NEW is not in disabled-extensions).
+# dconf rather than gsettings: if dconf-service can't be reached, gsettings silently falls back
+# to an in-memory backend, while dconf fails loudly and the old directory stays where it is.
+python3 -I - "$OLD" "$NEW" <<'EOF'
+import ast, subprocess, sys
+old, new = sys.argv[1:3]
+
+def read(key):
+    out = subprocess.run(['dconf', 'read', key], check=True, capture_output=True, text=True).stdout.strip()
+    out = out.removeprefix('@as ')
+    return ast.literal_eval(out) if out else []
+
+def write(key, items):
+    subprocess.run(['dconf', 'write', key, '@as ' + repr(list(items))], check=True)
+
+enabled = [u for u in read('/org/gnome/shell/enabled-extensions') if u != old]
+if new not in enabled:
+    enabled.append(new)
+write('/org/gnome/shell/enabled-extensions', enabled)
+disabled = read('/org/gnome/shell/disabled-extensions')
+if old in disabled or new in disabled:
+    write('/org/gnome/shell/disabled-extensions', [u for u in disabled if u not in (old, new)])
+
+check = read('/org/gnome/shell/enabled-extensions')
+if new not in check or old in check:
+    sys.exit(f'enabled-extensions did not take the change: {check}')
+EOF
+
+mkdir -p "$(dirname "$BACKUP")"
+rm -rf "$BACKUP"
+mv "$EXT_ROOT/$OLD" "$BACKUP"
+echo "lumina-migrate-uuid: $OLD -> $NEW (old directory kept in $BACKUP)"

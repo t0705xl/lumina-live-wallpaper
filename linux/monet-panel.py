@@ -35,8 +35,19 @@ gi.require_version('Gio', '2.0')
 gi.require_version('GLib', '2.0')
 from gi.repository import Gio, GLib
 
-EXTENSION_UUID = "avatar-quick-settings@github.leginreklaw"
+EXTENSION_UUID = "lumina-shell@lumina-live-wallpaper"
 CSS_PATH = os.path.expanduser(f"~/.local/share/gnome-shell/extensions/{EXTENSION_UUID}/stylesheet.css")
+# The extension used to live under this borrowed UUID. Until lumina-migrate-uuid moves it (before
+# the next GNOME Shell start), the running shell still reads its stylesheet from there.
+LEGACY_EXTENSION_DIR = os.path.expanduser(
+    "~/.local/share/gnome-shell/extensions/avatar-quick-settings@github.leginreklaw")
+
+
+def shell_css_paths():
+    paths = [CSS_PATH]
+    if os.path.exists(os.path.join(LEGACY_EXTENSION_DIR, 'glass.js')):
+        paths.append(os.path.join(LEGACY_EXTENSION_DIR, 'stylesheet.css'))
+    return paths
 PTYXIS_PALETTES_DIR = os.path.expanduser("~/.local/share/org.gnome.Ptyxis/palettes")
 PTYXIS_PALETTE_PATH = os.path.join(PTYXIS_PALETTES_DIR, "monet.palette")
 GTK4_CSS_PATH = os.path.expanduser("~/.config/gtk-4.0/gtk.css")
@@ -1277,7 +1288,8 @@ def apply_all(force=False):
 
     # 1. GNOME Shell Top Bar + Overview
     css = generate_gnome_shell_css(palette)
-    atomic_write(CSS_PATH, css)
+    for path in shell_css_paths():
+        atomic_write(path, css)
     reload_shell_stylesheet()
 
     # 2. Terminal

@@ -29,7 +29,7 @@ export default class LuminaDebug extends Extension {
     // Mirrors the Looking Glass line given to the user: load glass.js into a running Shell whose
     // extension was loaded before glass.js existed (no re-login).
     async _loadGlass(query) {
-        const uuid = 'avatar-quick-settings@github.leginreklaw';
+        const uuid = 'lumina-shell@lumina-live-wallpaper';
         const m = await import(Main.extensionManager.lookup(uuid).dir.get_child('glass.js').get_uri() + query);
         global._luminaGlass?.disable();
         global._luminaGlass = new m.GlassManager();

@@ -10,7 +10,7 @@
 set -e
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 P=${PREVIEW_DIR:-$HOME/.cache/lumina-preview}
-UUID=avatar-quick-settings@github.leginreklaw
+UUID=lumina-shell@lumina-live-wallpaper
 EXT=$P/data/gnome-shell/extensions
 
 setup() {
