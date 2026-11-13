@@ -13,6 +13,9 @@ rm -f "$HOME/.local/bin/live-wallpaper-daemon"
 rm -f "$HOME/.local/bin/set-live-wallpaper"
 rm -f "$HOME/.local/bin/monet-panel.py"
 rm -f "$HOME/.local/bin/lumina-migrate-uuid"
+rm -f "$HOME/.local/bin/lumina-fit-video"
+# Playback copies made by lumina-fit-video (the original videos are left alone).
+rm -rf "$HOME/.local/share/live-wallpaper/fitted"
 systemctl --user disable lumina-migrate-uuid.service 2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/lumina-migrate-uuid.service"
 

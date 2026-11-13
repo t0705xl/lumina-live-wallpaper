@@ -8,6 +8,9 @@ CONF_DIR="$HOME/.config/live-wallpaper"
 REGISTRY_JSON="$CONF_DIR/registry.json"
 XML_DIR="$HOME/.local/share/gnome-background-properties"
 XML_FILE="$XML_DIR/live-wallpaper.xml"
+# Screen-sized playback copies (see lumina-fit-video): next to this script, or on PATH.
+FIT_BIN="$(dirname "$(realpath "$0")")/lumina-fit-video"
+[ -x "$FIT_BIN" ] || FIT_BIN="$(command -v lumina-fit-video || true)"
 
 mkdir -p "$BG_DIR" "$COVERS_DIR" "$CONF_DIR" "$XML_DIR"
 
@@ -21,6 +24,7 @@ usage() {
   set-live-wallpaper --list             列出所有已注册的动态视频壁纸
   set-live-wallpaper --remove <名称>    删除指定的动态视频壁纸并清理封面与注册表
   set-live-wallpaper --refresh-badges   为所有已注册的动态壁纸重新生成「▶ LIVE」缩略图角标并同步壁纸库 XML
+  set-live-wallpaper --fit-all          为所有动态壁纸重新生成按屏幕尺寸、≤30fps 的播放副本（换显示器或分辨率后运行）
 EOF
 }
 
@@ -221,6 +225,14 @@ case "$1" in
         echo "已为所有动态壁纸更新「▶ LIVE」缩略图角标并同步系统壁纸列表 ($XML_FILE)"
         exit 0
         ;;
+    --fit-all)
+        if [ -z "$FIT_BIN" ]; then
+            echo "错误: 找不到 lumina-fit-video"
+            exit 1
+        fi
+        "$FIT_BIN" --all
+        exit $?
+        ;;
     --list)
         echo "已注册的动态视频壁纸 ($COVERS_DIR):"
         for c in "$COVERS_DIR"/*-cover.png; do
@@ -248,6 +260,11 @@ if os.path.exists(reg_path):
     to_del = [k for k, v in wps.items() if os.path.basename(k).startswith(stem + "-") or not os.path.exists(v)]
     for k in to_del:
         wps.pop(k, None)
+    fitted = data.get("fitted", {})
+    for src in [s for s in fitted if not os.path.exists(s)]:
+        copy = fitted.pop(src).get("path", "")
+        if os.path.isfile(copy):
+            os.remove(copy)
     with open(reg_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 RMEOF
@@ -417,6 +434,12 @@ data["defaultVideo"] = os.path.join(os.path.dirname(video_path), "current-live-w
 with open(registry_path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
 PYEOF
+
+# 生成按屏幕尺寸、≤30fps 的播放副本（原文件保留）：解码器不必再解码屏幕显示不出的像素和帧。失败不影响设置，守护进程会播放原文件
+if [ -n "$FIT_BIN" ]; then
+    echo "正在生成适配屏幕的播放副本…"
+    "$FIT_BIN" "$TARGET_MP4" || true
+fi
 
 # 建立零冗余硬链接到 backgrounds/ 目录供 GNOME 系统设置中心 (BgRecentSource) 发现展示 (GNOME 强制要求 regular file，过滤 symlink)
 ln -f "$COVER_PNG" "$BG_DIR/${STEM}-cover.png"

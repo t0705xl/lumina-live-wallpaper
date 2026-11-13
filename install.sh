@@ -34,7 +34,8 @@ cp -f "$REPO_DIR/linux/live-wallpaper-daemon" "$BIN_DIR/live-wallpaper-daemon"
 cp -f "$REPO_DIR/linux/set-live-wallpaper" "$BIN_DIR/set-live-wallpaper"
 cp -f "$REPO_DIR/linux/monet-panel.py" "$BIN_DIR/monet-panel.py"
 cp -f "$REPO_DIR/linux/lumina-migrate-uuid" "$BIN_DIR/lumina-migrate-uuid"
-chmod +x "$BIN_DIR/live-wallpaper-daemon" "$BIN_DIR/set-live-wallpaper" "$BIN_DIR/monet-panel.py" "$BIN_DIR/lumina-migrate-uuid"
+cp -f "$REPO_DIR/linux/lumina-fit-video" "$BIN_DIR/lumina-fit-video"
+chmod +x "$BIN_DIR/live-wallpaper-daemon" "$BIN_DIR/set-live-wallpaper" "$BIN_DIR/monet-panel.py" "$BIN_DIR/lumina-migrate-uuid" "$BIN_DIR/lumina-fit-video"
 
 # 3. Install GNOME Shell Extension (Zero-flicker Monet CSS hot-reload & Fullscreen occlusion tracker)
 echo "[3/4] 部署 GNOME Shell 莫奈状态栏与全屏检测扩展 ($EXT_UUID) ..."
@@ -68,6 +69,9 @@ if [ -f "$HOME/.local/share/gnome-shell/extensions/$LEGACY_UUID/glass.js" ]; the
     cp -f "$REPO_DIR/linux/systemd/lumina-migrate-uuid.service" "$SYSTEMD_DIR/lumina-migrate-uuid.service"
     MIGRATE=1
 fi
+
+# Screen-sized, <=30 fps playback copies of already registered wallpapers (needs the GNOME session).
+"$BIN_DIR/lumina-fit-video" --all || true
 
 systemctl --user daemon-reload
 systemctl --user enable --now live-wallpaper.service

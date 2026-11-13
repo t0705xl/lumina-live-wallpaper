@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""lumina-fit-video: give each live wallpaper a playback copy sized to the screen.
+
+The daemon never shows more than the screen's pixels or more than LIVE_WALLPAPER_MAX_FPS (30)
+frames a second, but the decoder still decodes every pixel of every frame in the file: a
+3840x2160 60 fps clip on a 2736x1824 screen is decoded at about three times what can be shown
+(the frame-rate cap only drops frames after they are decoded). This writes
+<live dir>/fitted/<name>, just large enough to cover every monitor and at most 30 fps,
+re-encoded on the GPU, and records it in registry.json under "fitted".
+
+The original stays the registered wallpaper. The daemon plays the fitted copy only while it
+still covers the monitor (not after rotating to portrait, say) and the original is unchanged.
+
+usage: lumina-fit-video <video>...      fit these videos
+       lumina-fit-video --all           fit every registered live wallpaper, drop stale copies
+"""
+
+import json
+import math
+import os
+import sys
+import tempfile
+from fractions import Fraction
+
+import gi
+
+gi.require_version("Gst", "1.0")
+gi.require_version("GstPbutils", "1.0")
+from gi.repository import Gio, GLib, Gst, GstPbutils  # noqa: E402
+
+LIVE_DIR = os.path.expanduser("~/.local/share/live-wallpaper")
+FIT_DIR = os.path.join(LIVE_DIR, "fitted")
+REGISTRY = os.path.expanduser("~/.config/live-wallpaper/registry.json")
+
+
+def _max_fps():
+    # Same parsing as the daemon: parseInt(env || '30') || 30, clamped to 15..120.
+    try:
+        v = int(os.environ.get("LIVE_WALLPAPER_MAX_FPS") or "30") or 30
+    except ValueError:
+        v = 30
+    return max(15, min(120, v))
+
+
+MAX_FPS = _max_fps()
+# VA ICQ quality factor. On a 4K60 clip scaled to 3244x1824 it measured 47-48 dB PSNR and
+# SSIM 0.991 against the original scaled the same way: no visible loss.
+QUALITY = 20
+
+
+def monitor_sizes():
+    """Physical pixel size of every active monitor, as it is currently rotated."""
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        reply = bus.call_sync(
+            "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig",
+            "org.gnome.Mutter.DisplayConfig", "GetCurrentState",
+            None, None, Gio.DBusCallFlags.NONE, 2000, None,
+        ).unpack()
+    except GLib.Error:
+        return []
+    _serial, monitors, logical_monitors, _props = reply
+    current = {}
+    for spec, modes, _mprops in monitors:
+        for mode in modes:
+            if mode[6].get("is-current"):
+                current[tuple(spec)] = (mode[1], mode[2])
+    sizes = []
+    for _x, _y, _scale, transform, _primary, specs, _lprops in logical_monitors:
+        for spec in specs:
+            w, h = current.get(tuple(spec), (0, 0))
+            if transform % 2:  # 1, 3, 5, 7 are quarter turns
+                w, h = h, w
+            if w and h:
+                sizes.append((w, h))
+    return sizes
+
+
+def probe(path):
+    info = GstPbutils.Discoverer.new(15 * Gst.SECOND).discover_uri(Gst.filename_to_uri(path))
+    streams = info.get_video_streams()
+    if not streams:
+        raise RuntimeError("没有视频流")
+    v = streams[0]
+    fps = Fraction(v.get_framerate_num(), v.get_framerate_denom() or 1)
+    return v.get_width(), v.get_height(), fps, info.get_duration()
+
+
+def _even_up(x):
+    return int(math.ceil(x / 2.0 - 1e-6)) * 2
+
+
+def fitted_geometry(vw, vh, fps, screens):
+    """Smallest size that still covers every screen (GtkPicture COVER), and an even fraction
+    of the source frame rate that does not exceed MAX_FPS (60 -> 30, 50 -> 25, 120 -> 30)."""
+    scale = max([max(w / vw, h / vh) for w, h in screens] or [1.0])
+    if scale < 1.0:
+        tw, th = min(vw, _even_up(vw * scale)), min(vh, _even_up(vh * scale))
+    else:
+        tw, th = vw, vh
+    step = max(1, math.ceil(fps / MAX_FPS)) if fps > 0 else 1
+    return tw, th, fps / step
+
+
+def _pipelines(tw, th, fps):
+    rate = f"framerate={fps.numerator}/{fps.denominator}"
+    tail = "h264parse ! mp4mux ! filesink name=sink"
+    # GPU: VA decode -> VA scale -> drop frames -> VA encode, never leaving video memory.
+    yield "VA-API", (
+        "filesrc name=src ! decodebin ! vapostproc ! "
+        f"video/x-raw(memory:VAMemory),width={tw},height={th} ! "
+        f"videorate drop-only=true ! video/x-raw(memory:VAMemory),{rate} ! "
+        f"vah264enc rate-control=icq qpi={QUALITY} target-usage=1 b-frames=2 ! {tail}"
+    )
+    # CPU fallback for machines without the VA GStreamer plugin.
+    yield "x264", (
+        "filesrc name=src ! decodebin ! videoconvert ! videoscale method=lanczos ! "
+        f"video/x-raw,format=I420,width={tw},height={th} ! "
+        f"videorate drop-only=true ! video/x-raw,{rate} ! "
+        f"x264enc pass=quant quantizer={QUALITY} speed-preset=fast ! {tail}"
+    )
+
+
+def _run(desc, src, dst, timeout_s):
+    try:
+        pipeline = Gst.parse_launch(desc)
+    except GLib.Error as e:
+        return str(e.message)
+    pipeline.get_by_name("src").set_property("location", src)
+    pipeline.get_by_name("sink").set_property("location", dst)
+    pipeline.set_state(Gst.State.PLAYING)
+    msg = pipeline.get_bus().timed_pop_filtered(
+        int(timeout_s * Gst.SECOND), Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    pipeline.set_state(Gst.State.NULL)
+    if msg is None:
+        return "超时"
+    if msg.type == Gst.MessageType.ERROR:
+        return msg.parse_error()[0].message
+    return None
+
+
+def encode(src, dst, tw, th, fps, src_duration):
+    if os.environ.get("LUMINA_FIT_FORCE_SW"):
+        candidates = [p for p in _pipelines(tw, th, fps) if p[0] != "VA-API"]
+    else:
+        candidates = list(_pipelines(tw, th, fps))
+    timeout_s = max(120.0, src_duration / Gst.SECOND * 20)
+    errors = []
+    for name, desc in candidates:
+        part = dst + ".part"
+        err = _run(desc, src, part, timeout_s)
+        if err is None:
+            try:
+                w, h, _f, dur = probe(part)
+                # Dropping frames can shorten the clip by at most one frame of the new rate.
+                if (w, h) == (tw, th) and abs(dur - src_duration) <= Gst.SECOND / fps * 1.5:
+                    os.replace(part, dst)
+                    return name
+                err = f"输出不符: {w}x{h}, {dur / Gst.SECOND:.3f}s"
+            except Exception as e:  # noqa: BLE001
+                err = str(e)
+        if os.path.exists(part):
+            os.remove(part)
+        errors.append(f"{name}: {err}")
+    raise RuntimeError("; ".join(errors))
+
+
+def load_registry():
+    try:
+        with open(REGISTRY, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_registry(data):
+    os.makedirs(os.path.dirname(REGISTRY), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(REGISTRY), suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, REGISTRY)
+
+
+def _drop(fitted, src):
+    old = fitted.pop(src, None)
+    if old and os.path.isfile(old.get("path", "")):
+        os.remove(old["path"])
+
+
+def fit(src, fitted, screens):
+    src = os.path.realpath(src)
+    st = os.stat(src)
+    vw, vh, fps, duration = probe(src)
+    tw, th, tfps = fitted_geometry(vw, vh, fps, screens)
+    name = os.path.basename(src)
+    if (tw, th) == (vw, vh) and tfps == fps:
+        _drop(fitted, src)
+        return f"  {name}: {vw}x{vh} @{float(fps):g} 已经不大于屏幕，直接播放原文件"
+
+    entry = fitted.get(src)
+    want = {"width": tw, "height": th, "fps": round(float(tfps), 3), "maxFps": MAX_FPS,
+            "sourceSize": st.st_size, "sourceMtime": int(st.st_mtime)}
+    if entry and os.path.isfile(entry.get("path", "")) and all(entry.get(k) == v for k, v in want.items()):
+        return f"  {name}: 播放副本已是最新 ({tw}x{th} @{float(tfps):g})"
+
+    os.makedirs(FIT_DIR, exist_ok=True)
+    dst = os.path.join(FIT_DIR, name)
+    how = encode(src, dst, tw, th, tfps, duration)
+    fitted[src] = {"path": dst, **want}
+    before, after = vw * vh * float(fps), tw * th * float(tfps)
+    return (f"  {name}: {vw}x{vh} @{float(fps):g} -> {tw}x{th} @{float(tfps):g} ({how})，"
+            f"解码量降为 {after / before:.0%}，{st.st_size / 1e6:.1f} MB -> {os.path.getsize(dst) / 1e6:.1f} MB")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0 if argv else 1
+    Gst.init(None)
+    screens = monitor_sizes()
+    if not screens:
+        print("lumina-fit-video: 读不到显示器尺寸（不在 GNOME 会话中？），跳过生成播放副本", file=sys.stderr)
+        return 0
+    data = load_registry()
+    fitted = data.setdefault("fitted", {})
+    if argv[0] == "--all":
+        sources = sorted({os.path.realpath(v) for v in data.get("wallpapers", {}).values() if os.path.isfile(v)})
+        for stale in [s for s in fitted if s not in sources]:
+            _drop(fitted, stale)
+    else:
+        sources = argv
+    print("屏幕: " + ", ".join(f"{w}x{h}" for w, h in screens) + f"，帧率上限 {MAX_FPS}")
+    failed = 0
+    for src in sources:
+        try:
+            print(fit(src, fitted, screens), flush=True)
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            print(f"  {os.path.basename(src)}: 生成播放副本失败，将播放原文件 ({e})", file=sys.stderr)
+        save_registry(data)  # after each video, so a crash part-way keeps what is done
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

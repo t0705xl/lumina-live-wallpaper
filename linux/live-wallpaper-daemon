@@ -286,10 +286,17 @@ let trackedMonitor = null;
 let monitorGeomSigId = 0;
 let monitorScaleSigId = 0;
 
+// Set just before the first syncWallpaperMode(): the settings objects it uses are created below.
+let daemonReady = false;
+
 function updateMonitorGeometry() {
     geom = getPrimaryGeometry();
     win.set_default_size(geom.width, geom.height);
     win.set_size_request(geom.width, geom.height);
+    // A fitted copy may no longer cover the monitor (rotated to portrait), or may again.
+    if (daemonReady) {
+        syncWallpaperMode();
+    }
 }
 
 function bindMonitorSignals() {
@@ -320,6 +327,7 @@ if (monitors) {
 }
 
 let currentVideoPath = '';
+let currentSourcePath = '';
 let isScreenLocked = false;
 let isDisplayOff = false;
 let isOccluded = false;
@@ -427,6 +435,13 @@ bus.connect('message::error', (_bus, msg) => {
     printerr(`[LiveWallpaper] GStreamer error: ${err.message} (${dbg || 'no debug'})\n`);
     pipeline.set_state(Gst.State.NULL);
     cancelErrorRetryTimer();
+    if (currentSourcePath && currentVideoPath !== currentSourcePath) {
+        // The fitted copy is broken: fall back to the original file for the rest of this session.
+        printerr(`[LiveWallpaper] Fitted copy failed, playing the original instead: ${currentSourcePath}\n`);
+        brokenFitted.add(currentVideoPath);
+        currentVideoPath = currentSourcePath;
+        errorRetries = 0;
+    }
     errorRetries += 1;
     if (errorRetries <= 3 && isLiveActive && !shouldPausePlayback() && currentVideoPath) {
         errorRetryTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
@@ -479,26 +494,79 @@ function getActiveWallpaperPath() {
     return uriToPath(uri);
 }
 
+function readRegistry() {
+    if (!GLib.file_test(registryPath, GLib.FileTest.EXISTS)) {
+        return {};
+    }
+    try {
+        const [ok, bytes] = GLib.file_get_contents(registryPath);
+        return ok ? JSON.parse(ByteArray.toString(bytes)) : {};
+    } catch (e) {
+        printerr(`[LiveWallpaper] Failed to parse registry.json: ${e}\n`);
+        return {};
+    }
+}
+
+function realPath(path) {
+    for (let i = 0; i < 8 && GLib.file_test(path, GLib.FileTest.IS_SYMLINK); i++) {
+        const target = GLib.file_read_link(path);
+        path = GLib.path_is_absolute(target)
+            ? target
+            : GLib.build_filenamev([GLib.path_get_dirname(path), target]);
+    }
+    return path;
+}
+
+// Physical pixels of the monitor the wallpaper window covers.
+function monitorPixelSize() {
+    const mons = disp ? disp.get_monitors() : null;
+    const mon = mons && mons.get_n_items() > 0 ? mons.get_item(0) : null;
+    if (!mon) {
+        return [0, 0];
+    }
+    const g = mon.get_geometry();
+    const scale = typeof mon.get_scale === 'function' ? mon.get_scale() : mon.get_scale_factor();
+    return [Math.round(g.width * scale), Math.round(g.height * scale)];
+}
+
+// Fitted copies (lumina-fit-video) that failed to play; the original is used instead.
+const brokenFitted = new Set();
+
+// lumina-fit-video writes a copy of each wallpaper sized to the screen and capped at 30 fps,
+// so the decoder does not decode pixels and frames that are never shown. Play it only while it
+// still covers this monitor (not after rotating to portrait), the frame cap it was made for is
+// not below ours, and the original has not changed since.
+function playbackFileFor(sourcePath) {
+    const source = realPath(sourcePath);
+    const fit = (readRegistry().fitted || {})[source];
+    if (!fit || !fit.path || brokenFitted.has(fit.path) || !GLib.file_test(fit.path, GLib.FileTest.EXISTS)) {
+        return sourcePath;
+    }
+    try {
+        const info = Gio.File.new_for_path(source).query_info('standard::size,time::modified', Gio.FileQueryInfoFlags.NONE, null);
+        if (info.get_size() !== fit.sourceSize || info.get_attribute_uint64('time::modified') !== fit.sourceMtime) {
+            return sourcePath;
+        }
+    } catch (_e) {
+        return sourcePath;
+    }
+    const [w, h] = monitorPixelSize();
+    if (!w || fit.width + 2 < w || fit.height + 2 < h || (fit.maxFps || 0) < maxFps) {
+        return sourcePath;
+    }
+    return fit.path;
+}
+
 function resolveLiveVideoForWallpaper(wallpaperPath) {
     if (!wallpaperPath) {
         return null;
     }
     const baseName = GLib.path_get_basename(wallpaperPath);
 
-    if (GLib.file_test(registryPath, GLib.FileTest.EXISTS)) {
-        try {
-            const [ok, bytes] = GLib.file_get_contents(registryPath);
-            if (ok) {
-                const data = JSON.parse(ByteArray.toString(bytes));
-                const map = data.wallpapers || {};
-                const candidate = map[wallpaperPath] || map[baseName];
-                if (candidate && GLib.file_test(candidate, GLib.FileTest.EXISTS)) {
-                    return candidate;
-                }
-            }
-        } catch (e) {
-            printerr(`[LiveWallpaper] Failed to parse registry.json: ${e}\n`);
-        }
+    const map = readRegistry().wallpapers || {};
+    const registered = map[wallpaperPath] || map[baseName];
+    if (registered && GLib.file_test(registered, GLib.FileTest.EXISTS)) {
+        return registered;
     }
 
     if (/-(live-)?cover\.(png|jpe?g)$/i.test(baseName)) {
@@ -523,7 +591,8 @@ function resolveLiveVideoForWallpaper(wallpaperPath) {
 
 function syncWallpaperMode() {
     const activeWallpaper = getActiveWallpaperPath();
-    const targetVideo = resolveLiveVideoForWallpaper(activeWallpaper);
+    const sourceVideo = resolveLiveVideoForWallpaper(activeWallpaper);
+    const targetVideo = sourceVideo ? playbackFileFor(sourceVideo) : null;
 
     if (targetVideo) {
         errorRetries = 0;
@@ -535,6 +604,7 @@ function syncWallpaperMode() {
         if (videoChanged) {
             cancelFadeAnimation();
             currentVideoPath = targetVideo;
+            currentSourcePath = sourceVideo;
             pendingPreroll = true;
             segmentArmed = false;
             print(`[LiveWallpaper] Activating dynamic video wallpaper: ${currentVideoPath} (cover: ${activeWallpaper})`);
@@ -724,6 +794,7 @@ try {
     // Ignore if login1 D-Bus is unavailable
 }
 
+daemonReady = true;
 syncWallpaperMode();
 
 const mainLoop = GLib.MainLoop.new(null, false);

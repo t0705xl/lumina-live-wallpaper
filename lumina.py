@@ -24,6 +24,7 @@ def print_usage():
   python lumina.py daemon                        启动动态壁纸后台守护进程
   python lumina.py monet                         立即根据当前壁纸提取并应用莫奈 (Material You) 主题色
   python lumina.py refresh-badges                刷新系统设置中的「▶ LIVE」缩略图角标 (Linux GNOME)
+  python lumina.py fit                           按屏幕尺寸重新生成 ≤30fps 播放副本（换显示器后运行，Linux GNOME）
 """
     )
 
@@ -68,6 +69,8 @@ def main():
             subprocess.run([set_script, "--remove", sys.argv[2]], check=True)
         elif cmd == "refresh-badges":
             subprocess.run([set_script, "--refresh-badges"], check=True)
+        elif cmd == "fit":
+            subprocess.run([set_script, "--fit-all"], check=True)
         elif cmd == "daemon":
             subprocess.run(["gjs", daemon_script], check=True)
         elif cmd == "monet":
