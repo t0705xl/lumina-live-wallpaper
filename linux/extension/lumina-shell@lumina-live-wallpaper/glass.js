@@ -20,6 +20,7 @@ import St from 'gi://St';
 
 import * as Background from 'resource:///org/gnome/shell/ui/background.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as Workspace from 'resource:///org/gnome/shell/ui/workspace.js';
 
 const EFFECT_NAME = 'lumina-glass';
 // Tells monet-panel.py that real backdrop blur is running, so it may use thinner glass tints.
@@ -516,6 +517,92 @@ class OverviewWallpaper {
     }
 }
 
+// The workspace card's wallpaper is drawn monitor-sized inside a bin that clips it to the work
+// area (the monitor minus the top bar), with rounded corners on that work-area rectangle. GNOME
+// keeps that clip for the whole zoom between the window picker and the desktop. Under a solid bar
+// nobody sees it; under the see-through glass bar the card's top edge stops on a straight line
+// at the bar's bottom edge, its rounded corners sit on that line, and the strip behind the bar
+// pops in only when the overview is gone. Here the clip grows from the work area (window picker)
+// to the whole monitor (desktop) with the state value GNOME uses for the corner radius, so the
+// card's top edge and its corners slide up under the bar together.
+class WorkspaceClipPatch {
+    enable() {
+        const proto = Workspace.WorkspaceBackground.prototype;
+        this._proto = proto;
+        this._origBounds = proto._updateRoundedClipBounds;
+        this._origRadius = proto._updateBorderRadius;
+        const live = this._live = new Map(); // WorkspaceBackground -> bin allocation handler
+        const origRadius = this._origRadius;
+
+        // How far (0..1) the clip has grown from the work area towards the whole monitor.
+        const growth = bg => 1 - clamp01(bg._stateAdjustment?.value ?? 1);
+        const edges = bg => {
+            const m = Main.layoutManager.monitors[bg._monitorIndex];
+            const wa = bg._workarea;
+            if (!m || !wa)
+                return null;
+            return {m, wa, l: wa.x - m.x, t: wa.y - m.y,
+                r: m.x + m.width - wa.x - wa.width, b: m.y + m.height - wa.y - wa.height};
+        };
+        const clipBin = bg => {
+            const bin = bg._bin;
+            const e = edges(bg);
+            if (!bin || !e || !bin.has_allocation())
+                return;
+            const [w, h] = bin.get_size();
+            const xs = w / e.wa.width, ys = h / e.wa.height, g = growth(bg);
+            const l = e.l * xs * g, t = e.t * ys * g, r = e.r * xs * g, b = e.b * ys * g;
+            bin.set_clip(-l, -t, w + l + r, h + t + b);
+        };
+        const track = bg => {
+            if (live.has(bg) || !bg._bin)
+                return;
+            bg._bin.clip_to_allocation = false;
+            live.set(bg, bg._bin.connect('notify::allocation', () => clipBin(bg)));
+            bg.connect('destroy', () => live.delete(bg));
+            clipBin(bg);
+        };
+
+        proto._updateRoundedClipBounds = function () {
+            const content = this._bgManager?.backgroundActor?.content;
+            const e = edges(this);
+            if (!content || !e)
+                return;
+            track(this);
+            // Background-content coordinates are the monitor's, unscaled.
+            const keep = 1 - growth(this);
+            const rect = new Graphene.Rect();
+            rect.origin.x = e.l * keep;
+            rect.origin.y = e.t * keep;
+            rect.size.width = e.m.width - (e.l + e.r) * keep;
+            rect.size.height = e.m.height - (e.t + e.b) * keep;
+            content.set_rounded_clip_bounds(rect);
+            clipBin(this);
+        };
+        proto._updateBorderRadius = function () {
+            origRadius.call(this);
+            this._updateRoundedClipBounds();
+        };
+    }
+
+    disable() {
+        if (!this._proto)
+            return;
+        this._proto._updateRoundedClipBounds = this._origBounds;
+        this._proto._updateBorderRadius = this._origRadius;
+        for (const [bg, id] of this._live) {
+            bg._bin?.disconnect(id);
+            if (bg._bin) {
+                bg._bin.remove_clip();
+                bg._bin.clip_to_allocation = true;
+            }
+            this._origBounds.call(bg); // back to GNOME's work-area clip
+        }
+        this._live.clear();
+        this._proto = null;
+    }
+}
+
 // Attaches GlassEffect to every top-bar pill, their popup menus and the overview dash (dock).
 export class GlassManager {
     constructor(params = {}) {
@@ -544,11 +631,20 @@ export class GlassManager {
             logError(e, 'Lumina glass: overview wallpaper unavailable');
             this._overviewWallpaper = null;
         }
+        try {
+            this._clipPatch = new WorkspaceClipPatch();
+            this._clipPatch.enable();
+        } catch (e) {
+            logError(e, 'Lumina glass: workspace clip patch unavailable');
+            this._clipPatch = null;
+        }
         setMarker(true);
     }
 
     disable() {
         setMarker(false);
+        this._clipPatch?.disable();
+        this._clipPatch = null;
         this._overviewWallpaper?.disable();
         this._overviewWallpaper = null;
         for (const box of [Main.panel._leftBox, Main.panel._centerBox, Main.panel._rightBox])

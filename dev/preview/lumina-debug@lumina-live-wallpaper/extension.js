@@ -47,11 +47,28 @@ export default class LuminaDebug extends Extension {
             Main.overview.show();
             return true;
         }
+        if (which.startsWith('state:')) {
+            // Freeze the overview at one point of its zoom (0 desktop, 1 window picker, 2 app
+            // grid) so a transition can be checked frame by frame.
+            const v = Number(which.slice(6));
+            const adj = Main.overview._overview?._controls?._stateAdjustment;
+            if (!adj || !Main.overview.visible || !Number.isFinite(v))
+                return false;
+            // As in a three-finger swipe held mid-way: GNOME only interpolates the layout
+            // between states while a gesture or a transition is running.
+            adj.remove_transition?.('value');
+            adj.gestureInProgress = true;
+            adj.value = v;
+            return true;
+        }
         if (which === 'appGrid') {
             Main.overview.showApps();
             return true;
         }
         if (which === 'desktop') {
+            const adj = Main.overview._overview?._controls?._stateAdjustment;
+            if (adj)
+                adj.gestureInProgress = false;
             Main.overview.hide();
             return true;
         }
