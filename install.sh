@@ -36,7 +36,9 @@ chmod +x "$BIN_DIR/live-wallpaper-daemon" "$BIN_DIR/set-live-wallpaper" "$BIN_DI
 # 3. Install GNOME Shell Extension (Zero-flicker Monet CSS hot-reload & Fullscreen occlusion tracker)
 echo "[3/4] 部署 GNOME Shell 莫奈状态栏与全屏检测扩展 ($EXT_UUID) ..."
 mkdir -p "$EXT_DIR"
-cp -f "$REPO_DIR/linux/extension/$EXT_UUID/extension.js" "$EXT_DIR/extension.js"
+# Every module (extension.js imports glass.js) plus metadata. stylesheet.css is not shipped:
+# monet-panel.py generates it from the current wallpaper.
+cp -f "$REPO_DIR/linux/extension/$EXT_UUID/"*.js "$EXT_DIR/"
 cp -f "$REPO_DIR/linux/extension/$EXT_UUID/metadata.json" "$EXT_DIR/metadata.json"
 gsettings set org.gnome.shell disable-user-extensions false || true
 gnome-extensions enable "$EXT_UUID" 2>/dev/null || true

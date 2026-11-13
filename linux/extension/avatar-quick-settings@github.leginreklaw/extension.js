@@ -26,6 +26,8 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as UserWidget from 'resource:///org/gnome/shell/ui/userWidget.js';
 
+import {GlassManager} from './glass.js';
+
 export default class QuickSettingsAvatarExtension extends Extension {
     enable() {
         this._avatar = null;
@@ -47,9 +49,20 @@ export default class QuickSettingsAvatarExtension extends Extension {
 
         this._setupStylesheetHotReload();
         this._setupWallpaperOcclusionTracker();
+
+        try {
+            this._glass = new GlassManager();
+            this._glass.enable();
+        } catch (e) {
+            logError(e, `${this.metadata.name}: liquid glass backdrop unavailable`);
+            this._glass = null;
+        }
     }
 
     disable() {
+        this._glass?.disable();
+        this._glass = null;
+
         Main.panel.statusArea.quickSettings?.disconnectObject(this);
         global.display?.disconnectObject(this);
         global.window_manager?.disconnectObject(this);

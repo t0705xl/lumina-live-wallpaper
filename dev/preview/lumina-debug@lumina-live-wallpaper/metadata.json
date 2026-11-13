@@ -1,0 +1,1 @@
+{"uuid":"lumina-debug@lumina-live-wallpaper","name":"Lumina Debug (temporary)","description":"Temporary visual-check helper: screenshot to $XDG_RUNTIME_DIR/lumina-debug and open/close named panel menus. No code execution. Remove after use.","shell-version":["50"],"version":1}

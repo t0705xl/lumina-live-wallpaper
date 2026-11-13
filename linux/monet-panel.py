@@ -50,14 +50,6 @@ def atomic_write(filepath, content):
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(content)
 
-def hex_color(h, l, s):
-    r, g, b = colorsys.hls_to_rgb(h % 1.0, max(0.0, min(1.0, l)), max(0.0, min(1.0, s)))
-    return f"#{int(r*255):02X}{int(g*255):02X}{int(b*255):02X}"
-
-def rgba_color(h, l, s, a):
-    r, g, b = colorsys.hls_to_rgb(h % 1.0, max(0.0, min(1.0, l)), max(0.0, min(1.0, s)))
-    return f"rgba({int(r*255)}, {int(g*255)}, {int(b*255)}, {a})"
-
 def get_current_color_scheme():
     """Retrieve active color scheme (prefer-dark vs default/prefer-light)."""
     try:
@@ -88,317 +80,686 @@ def get_current_wallpaper():
         print(f"[Monet] Failed to query wallpaper: {e}", file=sys.stderr)
     return None
 
-def extract_palette(image_path, scheme='prefer-dark'):
-    """
-    Extract M3 Monet Glass tonal palette using 36-bin circular Hue Histogram
-    + Spatial Center/Top-Bar Weighting + Area-Chroma Clustering.
-    Prevents small high-saturation noise pixels from hijacking the dominant wallpaper theme,
-    and extracts both a Primary Hue (h) and a Secondary Specular Hue (h2) for iridescent glass.
-    """
-    import math
-    is_dark = (scheme == 'prefer-dark')
-    h, s, l_avg = 0.58, 0.42, 0.45
-    h2, s2 = 0.64, 0.38
 
-    if image_path and os.path.isfile(image_path):
-        try:
-            img = Image.open(image_path).convert('RGB')
-            w_size, h_size = 96, 96
-            img = img.resize((w_size, h_size), Image.Resampling.BILINEAR)
-            try:
-                pixels = list(img.get_flattened_data())
-            except AttributeError:
-                pixels = list(img.getdata())
+# =====================================================================
+#  Colour science: sRGB <-> linear <-> OKLab / OKLCH, WCAG luminance
+# =====================================================================
+import math
 
-            num_bins = 36  # 10 degrees per bin
-            bin_weights = [0.0] * num_bins
-            bin_samples = [[] for _ in range(num_bins)]
 
-            for idx, p in enumerate(pixels):
-                r, g, b = p[:3]
-                ph, pl, ps = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
-                # Filter out near-black, near-white, and achromatic grey pixels
-                if 0.10 < pl < 0.90 and ps > 0.10:
-                    y_norm = (idx // w_size) / float(h_size)
-                    x_norm = (idx % w_size) / float(w_size)
-                    # Gentle visual salience bias: center subject + top bar contact region
-                    center_bias = 1.0 + 0.18 * (1.0 - abs(x_norm - 0.5) * 2.0)
-                    top_bias = 1.12 if y_norm < 0.20 else 1.0
-                    # Area-accumulated perceptual weight (sub-linear saturation prevents 1-pixel neon hijack)
-                    chroma_score = (ps ** 0.72) * (1.0 - 0.65 * abs(pl - 0.50))
-                    w = chroma_score * center_bias * top_bias
+def _srgb_to_lin(c):
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
 
-                    b_idx = int(ph * num_bins) % num_bins
-                    bin_weights[b_idx] += w
-                    bin_samples[b_idx].append((ph, pl, ps, w))
 
-            total_weight = sum(bin_weights)
-            if total_weight > 0:
-                # Circular 5-tap Gaussian smoothing across adjacent 10-deg hue bins
-                smoothed = [0.0] * num_bins
-                kernel = [(-2, 0.12), (-1, 0.24), (0, 0.38), (1, 0.24), (2, 0.12)]
-                for i in range(num_bins):
-                    smoothed[i] = sum(bin_weights[(i + offset) % num_bins] * kw for offset, kw in kernel)
+def _lin_to_srgb(c):
+    c = min(1.0, max(0.0, c))
+    return 12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
 
-                peak_bin = max(range(num_bins), key=lambda i: smoothed[i])
 
-                # Gather cluster samples within +-2 bins (+-20 deg) of the winning peak
-                cluster_samples = []
-                for offset in (-2, -1, 0, 1, 2):
-                    cluster_samples.extend(bin_samples[(peak_bin + offset) % num_bins])
+def _cbrt(v):
+    return math.copysign(abs(v) ** (1.0 / 3.0), v)
 
-                if cluster_samples:
-                    cw_sum = sum(item[3] for item in cluster_samples)
-                    sin_sum = sum(math.sin(2.0 * math.pi * item[0]) * item[3] for item in cluster_samples)
-                    cos_sum = sum(math.cos(2.0 * math.pi * item[0]) * item[3] for item in cluster_samples)
-                    h = (math.atan2(sin_sum, cos_sum) / (2.0 * math.pi)) % 1.0
-                    s = sum(item[2] * item[3] for item in cluster_samples) / cw_sum
-                    l_avg = sum(item[1] * item[3] for item in cluster_samples) / cw_sum
-                    # Boost saturation moderately so dark/muted wallpapers still produce lively Monet glass
-                    s = max(0.28, min(0.82, s * 1.15))
 
-                # Find a secondary harmonic/contrast hue peak (>= 35 deg away) for glass specular iridescence
-                secondary_candidates = []
-                for i in range(num_bins):
-                    dist = min((i - peak_bin) % num_bins, (peak_bin - i) % num_bins)
-                    if dist >= 4 and smoothed[i] > smoothed[peak_bin] * 0.14:
-                        secondary_candidates.append((smoothed[i], i))
-                if secondary_candidates:
-                    secondary_candidates.sort(reverse=True)
-                    sec_bin = secondary_candidates[0][1]
-                    sec_samples = []
-                    for offset in (-1, 0, 1):
-                        sec_samples.extend(bin_samples[(sec_bin + offset) % num_bins])
-                    if sec_samples:
-                        sw_sum = sum(item[3] for item in sec_samples)
-                        s_sin = sum(math.sin(2.0 * math.pi * item[0]) * item[3] for item in sec_samples)
-                        s_cos = sum(math.cos(2.0 * math.pi * item[0]) * item[3] for item in sec_samples)
-                        h2 = (math.atan2(s_sin, s_cos) / (2.0 * math.pi)) % 1.0
-                        s2 = max(0.30, min(0.78, sum(item[2] * item[3] for item in sec_samples) / sw_sum))
-                    else:
-                        h2, s2 = (h + 0.07) % 1.0, s
+def _lin_to_oklab(r, g, b):
+    l = _cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+    m = _cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+    s = _cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+    return (0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+            1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+            0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s)
+
+
+def _oklab_to_lin(L, a, b):
+    l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3
+    m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3
+    s = (L - 0.0894841775 * a - 1.2914855480 * b) ** 3
+    return (4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+            -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+            -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s)
+
+
+def rgb255_to_oklch(r, g, b):
+    L, a, bb = _lin_to_oklab(_srgb_to_lin(r / 255.0), _srgb_to_lin(g / 255.0), _srgb_to_lin(b / 255.0))
+    return L, math.hypot(a, bb), math.degrees(math.atan2(bb, a)) % 360.0
+
+
+def rel_luminance(rgb):
+    r, g, b = (_srgb_to_lin(v / 255.0) for v in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(y1, y2):
+    hi, lo = max(y1, y2), min(y1, y2)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+class Tone:
+    """An sRGB colour built from OKLCH, chroma-reduced into the sRGB gamut."""
+
+    def __init__(self, L, C, H):
+        self.L, self.H = L, H
+
+        def conv(c):
+            return _oklab_to_lin(L, c * math.cos(math.radians(H)), c * math.sin(math.radians(H)))
+
+        def ok(v):
+            return all(-1e-5 <= x <= 1 + 1e-5 for x in v)
+
+        lin = conv(C)
+        if not ok(lin):
+            lo, hi = 0.0, C
+            for _ in range(20):
+                mid = (lo + hi) / 2
+                if ok(conv(mid)):
+                    lo = mid
                 else:
-                    h2, s2 = (h + 0.07) % 1.0, s
-        except Exception as e:
-            print(f"[Monet] Error processing image: {e}", file=sys.stderr)
+                    hi = mid
+            C = lo
+            lin = conv(C)
+        self.C = C
+        self.rgb = tuple(int(round(_lin_to_srgb(x) * 255)) for x in lin)
+        self.Y = rel_luminance(self.rgb)
 
-    def rgb_tuple(hv, lv, sv):
-        rr, gg, bb = colorsys.hls_to_rgb(hv % 1.0, max(0.0, min(1.0, lv)), max(0.0, min(1.0, sv)))
-        return int(round(rr * 255)), int(round(gg * 255)), int(round(bb * 255))
+    def hex(self):
+        return '#{:02X}{:02X}{:02X}'.format(*self.rgb)
 
-    def rgb_str(hv, lv, sv):
-        rr, gg, bb = rgb_tuple(hv, lv, sv)
-        return f"{rr}, {gg}, {bb}"
+    def rgb_str(self):
+        return '{}, {}, {}'.format(*self.rgb)
 
-    if is_dark:
-        # Dark Mode Ultra-Clear Crystal Liquid Glass (极清超晶流光液态玻璃)
-        # Highly translucent, luminous crystal glass allowing dynamic wallpaper to shine clearly through
-        glass_pill_bg = f"rgba({rgb_str(h, 0.20, min(s * 0.50, 0.28))}, 0.16)"
-        glass_pill_border = "rgba(255, 255, 255, 0.28)"
-        glass_pill_shadow = "none"
+    def a(self, alpha):
+        return f'rgba({self.rgb_str()}, {alpha:.2f})'
 
-        # Maximized panel (#panel.solid) ultra-clean smoked crystal
-        panel_solid_top = f"rgba({rgb_str(h, 0.14, min(s * 0.40, 0.22))}, 0.42)"
-        panel_solid_bot = f"rgba({rgb_str(h, 0.10, min(s * 0.35, 0.18))}, 0.32)"
 
-        # Hover & Active fluid states
-        hover_pill_bg = "rgba(255, 255, 255, 0.24)"
-        hover_pill_border = "rgba(255, 255, 255, 0.55)"
-        hover_pill_shadow = "none"
+def hex_color(h, l, s):
+    r, g, b = colorsys.hls_to_rgb(h % 1.0, max(0.0, min(1.0, l)), max(0.0, min(1.0, s)))
+    return f"#{int(r*255):02X}{int(g*255):02X}{int(b*255):02X}"
 
-        active_pill_bg = f"rgba({rgb_str(h, 0.72, min(s * 1.15, 0.80))}, 0.38)"
-        active_pill_border = f"rgba({rgb_str(h, 0.88, min(s * 1.15, 0.80))}, 0.75)"
-        active_pill_shadow = "none"
 
-        # Popup menu & Quick Settings crystal glass (超晶流光液态玻璃：高透光率 0.45、绝不死黑)
-        popup_bg = f"rgba({rgb_str(h, 0.18, min(s * 0.45, 0.22))}, 0.45)"
-        popup_border = "rgba(255, 255, 255, 0.26)"
+def rgba_color(h, l, s, a):
+    r, g, b = colorsys.hls_to_rgb(h % 1.0, max(0.0, min(1.0, l)), max(0.0, min(1.0, s)))
+    return f"rgba({int(r*255)}, {int(g*255)}, {int(b*255)}, {a})"
 
-        # High-contrast luminous glass tiles inside popups (浮雕微光卡片，晶莹清晰)
-        card_glass_bg = "rgba(255, 255, 255, 0.12)"
-        card_glass_border = "rgba(255, 255, 255, 0.22)"
-        card_hover_bg = "rgba(255, 255, 255, 0.22)"
-        card_hover_border = "rgba(255, 255, 255, 0.45)"
 
-        bg_surface = glass_pill_bg
-        bg_solid = popup_bg
-        bg_overview = f"rgba({rgb_str(h, 0.10, min(s * 0.4, 0.20))}, 0.28)"
+# =====================================================================
+#  Wallpaper analysis
+# =====================================================================
 
-        accent_rgb = rgb_str(h, 0.78, min(s * 1.15, 0.76))
-        text_color = "#FFFFFF"
-        subtitle_color = "rgba(255, 255, 255, 0.82)"
-        hover_text = "#FFFFFF"
+# Screen regions (fractions of the primary monitor) that sit behind Shell UI.
+REGION_TOP_BAR = (0.0, 0.0, 1.0, 0.05)
+REGION_POPUPS = (0.25, 0.04, 1.0, 0.70)   # date menu (centre) .. quick settings (right)
+REGION_DOCK = (0.28, 0.86, 0.72, 0.99)     # overview dash
+REGION_GRID = (0.08, 0.25, 0.92, 0.85)     # app grid icons and labels
+
+# WCAG contrast targets
+PILL_TEXT_CONTRAST = 4.5
+POPUP_TEXT_CONTRAST = 4.5
+
+
+def get_screen_aspect():
+    """Aspect ratio of the primary monitor from Mutter's DisplayConfig; 3:2 fallback (Surface)."""
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        res = bus.call_sync('org.gnome.Mutter.DisplayConfig', '/org/gnome/Mutter/DisplayConfig',
+                            'org.gnome.Mutter.DisplayConfig', 'GetCurrentState', None, None,
+                            Gio.DBusCallFlags.NONE, 800, None).unpack()
+        _serial, monitors, logical, _props = res
+        primary = next((lm for lm in logical if lm[4]), logical[0] if logical else None)
+        if primary:
+            transform = primary[3]
+            spec = primary[5][0]
+            for mon in monitors:
+                if tuple(mon[0]) == tuple(spec):
+                    for mode in mon[1]:
+                        if mode[6].get('is-current'):
+                            w, h = mode[1], mode[2]
+                            if transform in (1, 3, 5, 7):
+                                w, h = h, w
+                            return w / float(h)
+    except Exception:
+        pass
+    return 1.5
+
+
+def _picture_option():
+    try:
+        return Gio.Settings.new('org.gnome.desktop.background').get_string('picture-options')
+    except Exception:
+        return 'zoom'
+
+
+def _fit_to_screen(img, aspect):
+    """Crop the image the way GNOME's 'zoom' mode shows it, so regions map to the screen."""
+    if _picture_option() in ('stretched', 'scaled', 'centered', 'wallpaper', 'none'):
+        return img
+    w, h = img.size
+    if w / h > aspect:
+        nw = int(round(h * aspect))
+        x0 = (w - nw) // 2
+        return img.crop((x0, 0, x0 + nw, h))
+    nh = int(round(w / aspect))
+    y0 = (h - nh) // 2
+    return img.crop((0, y0, w, y0 + nh))
+
+
+def _percentile(values, p):
+    if not values:
+        return 0.5
+    v = sorted(values)
+    return v[min(len(v) - 1, max(0, int(round(p * (len(v) - 1)))))]
+
+
+def _region_luminance(img_small, region):
+    """Luminance samples of a region. img_small is a heavily box-downsampled image, which
+    approximates what the eye sees behind a glass surface (local averaging ~ blur)."""
+    w, h = img_small.size
+    x0, y0, x1, y1 = region
+    xs = range(int(x0 * w), max(int(x0 * w) + 1, int(math.ceil(x1 * w))))
+    ys = range(int(y0 * h), max(int(y0 * h) + 1, int(math.ceil(y1 * h))))
+    px = img_small.load()
+    return [rel_luminance(px[x, y][:3]) for y in ys for x in xs]
+
+
+# GNOME 47+ accent colours (org.gnome.desktop.interface accent-color)
+GNOME_ACCENTS = {
+    'blue': (0x35, 0x84, 0xE4), 'teal': (0x21, 0x90, 0xA4), 'green': (0x3A, 0x94, 0x4A),
+    'yellow': (0xC8, 0x88, 0x00), 'orange': (0xED, 0x5B, 0x00), 'red': (0xE6, 0x2D, 0x42),
+    'pink': (0xD5, 0x61, 0x99), 'purple': (0x91, 0x41, 0xAC), 'slate': (0x6F, 0x83, 0x96),
+}
+
+
+def nearest_gnome_accent(hue, chroma):
+    if chroma < 0.035:
+        return 'slate'
+    best, best_d = 'blue', 999.0
+    for name, rgb in GNOME_ACCENTS.items():
+        if name == 'slate':
+            continue
+        _L, _C, H = rgb255_to_oklch(*rgb)
+        d = abs((hue - H + 180) % 360 - 180)
+        if d < best_d:
+            best, best_d = name, d
+    return best
+
+
+def extract_source_color(img):
+    """Pick the wallpaper's theme colour, Material-You style.
+
+    The image is quantised (median cut, 32 colours) and each chromatic cluster is scored by
+    how much of the image shares its hue (+-15 deg) and by its chroma. Achromatic, near-black and
+    near-white clusters are ignored, so skies/snow/shadows do not wash the theme out, and a small
+    saturated object cannot win against a large coloured area.
+    Returns (hue_deg, chroma, info) or (None, 0, info) when the image has no usable colour.
+    """
+    small = img.resize((128, max(1, int(round(128 * img.size[1] / img.size[0])))), Image.Resampling.BILINEAR)
+    q = small.quantize(colors=32, method=Image.Quantize.MEDIANCUT)
+    pal = q.getpalette()
+    counts = q.getcolors(4096) or []
+    total = float(sum(c for c, _ in counts)) or 1.0
+
+    clusters = []
+    for count, idx in counts:
+        rgb = tuple(pal[idx * 3: idx * 3 + 3])
+        L, C, H = rgb255_to_oklch(*rgb)
+        clusters.append({'rgb': rgb, 'L': L, 'C': C, 'H': H, 'p': count / total})
+
+    usable = [c for c in clusters if c['C'] >= 0.03 and 0.25 <= c['L'] <= 0.94]
+    best, best_score = None, -1e9
+    for c in usable:
+        neighbourhood = sum(o['p'] for o in usable if abs((o['H'] - c['H'] + 180) % 360 - 180) <= 15)
+        if neighbourhood < 0.02:
+            continue
+        cam = c['C'] * 300.0   # OKLCH chroma -> roughly CAM16 chroma scale
+        chroma_score = (cam - 48.0) * (0.1 if cam < 48.0 else 0.3)
+        score = neighbourhood * 100.0 * 0.7 + chroma_score
+        if score > best_score:
+            best, best_score = c, score
+
+    chromatic_share = sum(c['p'] for c in usable)
+    if not best:
+        return None, 0.0, {'chromatic_share': chromatic_share}
+
+    # Refine hue/chroma as the population-weighted circular mean of the winning hue family
+    fam = [o for o in usable if abs((o['H'] - best['H'] + 180) % 360 - 180) <= 15]
+    wsum = sum(o['p'] for o in fam)
+    sx = sum(math.cos(math.radians(o['H'])) * o['p'] for o in fam)
+    sy = sum(math.sin(math.radians(o['H'])) * o['p'] for o in fam)
+    hue = math.degrees(math.atan2(sy, sx)) % 360.0
+    chroma = sum(o['C'] * o['p'] for o in fam) / wsum
+    return hue, chroma, {'chromatic_share': chromatic_share, 'family_share': wsum,
+                         'winner_rgb': best['rgb']}
+
+
+def analyse_wallpaper(image_path):
+    """Returns dict(hue, chroma, bar_y_hi, bar_y_lo, popup_y_hi, popup_y_lo, info)."""
+    out = {'hue': None, 'chroma': 0.0, 'bar_y_hi': 0.5, 'bar_y_lo': 0.2, 'bar_y_mid': 0.35,
+           'popup_y_hi': 0.5, 'popup_y_lo': 0.2, 'popup_y_mid': 0.35,
+           'dock_y_lo': 0.2, 'dock_y_mid': 0.35, 'dock_y_hi': 0.5, 'grid_y_p75': 0.4, 'info': {}}
+    if not image_path or not os.path.isfile(image_path):
+        return out
+    try:
+        img = Image.open(image_path).convert('RGB')
+        img.draft('RGB', (640, 640))
+        img = _fit_to_screen(img, get_screen_aspect())
+        hue, chroma, info = extract_source_color(img)
+        out.update(hue=hue, chroma=chroma, info=info)
+
+        # ~1/40 of the screen width per sample: a stand-in for what shows through frosted glass
+        sw = 40
+        small = img.resize((sw, max(1, int(round(sw * img.size[1] / img.size[0])))), Image.Resampling.BOX)
+        bar = _region_luminance(small, REGION_TOP_BAR)
+        pop = _region_luminance(small, REGION_POPUPS)
+        out.update(bar_y_mid=_percentile(bar, 0.50), popup_y_mid=_percentile(pop, 0.50))
+        dock = _region_luminance(small, REGION_DOCK)
+        grid = _region_luminance(small, REGION_GRID)
+        out.update(dock_y_lo=_percentile(dock, 0.10), dock_y_mid=_percentile(dock, 0.50),
+                   dock_y_hi=_percentile(dock, 0.90), grid_y_p75=_percentile(grid, 0.75))
+        out.update(bar_y_hi=_percentile(bar, 0.90), bar_y_lo=_percentile(bar, 0.10),
+                   popup_y_hi=_percentile(pop, 0.90), popup_y_lo=_percentile(pop, 0.10))
+    except Exception as e:
+        print(f"[Monet] Error analysing wallpaper: {e}", file=sys.stderr)
+    return out
+
+
+def _enc(y):
+    """Linear luminance -> sRGB-encoded value (GNOME Shell blends in encoded space)."""
+    return _lin_to_srgb(max(0.0, min(1.0, y)))
+
+
+def _need_y(text_y, glass_y, target):
+    """Luminance the composited background must stay below (light text) or above (dark text)."""
+    if text_y > glass_y:
+        return (text_y + 0.05) / target - 0.05
+    return target * (text_y + 0.05) - 0.05
+
+
+def solve_glass_alpha(glass_y, text_y, behind_enc, target, lo, hi):
+    """Smallest tint opacity so text over (tint blended onto the backdrop) meets the target.
+    Blending is done the way the Shell does it: on sRGB-encoded values, not in linear light.
+    behind_enc is the backdrop's encoded value (after any shader brightness)."""
+    g = _enc(glass_y)
+    need = _enc(max(0.0, _need_y(text_y, glass_y, target)))
+    if text_y > glass_y:          # background must get dark enough
+        if behind_enc <= need:
+            return lo
+        a = (behind_enc - need) / max(1e-6, behind_enc - g)
+    else:                         # background must get bright enough
+        if behind_enc >= need:
+            return lo
+        a = (need - behind_enc) / max(1e-6, g - behind_enc)
+    return max(lo, min(hi, a))
+
+
+def solve_glass(glass_y, text_y, behind_y, target, alpha_pref, alpha_cap, bright_range):
+    """Thin tint first: pick the shader brightness (it scales encoded backdrop values) that brings
+    the backdrop to the contrast target with the preferred tint, then raise the tint only as far as
+    still needed, never past alpha_cap. Returns (alpha, brightness)."""
+    bmin, bmax = bright_range
+    g = _enc(glass_y)
+    be = _enc(behind_y)
+    need = _enc(max(0.0, _need_y(text_y, glass_y, target)))
+    a = alpha_pref
+    b = bmin
+    if bmax != bmin and be > 1e-4:
+        want = (need - a * g) / max(1e-6, 1 - a)       # encoded backdrop value we need
+        b = max(bmin, min(bmax, want / be))
+        if text_y < glass_y and want <= be:            # dark text and already bright enough
+            b = bmin
+    alpha = solve_glass_alpha(glass_y, text_y, min(1.0, be * b), target, alpha_pref, alpha_cap)
+    return alpha, b
+
+
+# =====================================================================
+#  Palette
+# =====================================================================
+
+GLASS_MARKER = 'lumina-glass-active'
+
+
+def glass_blur_active():
+    """True when the Shell extension's backdrop blur is running (it drops a runtime marker).
+    LUMINA_GLASS=0/1 overrides, for previews."""
+    env = os.environ.get('LUMINA_GLASS')
+    if env in ('0', '1'):
+        return env == '1'
+    runtime_dir = os.environ.get('XDG_RUNTIME_DIR') or f"/run/user/{os.getuid()}"
+    return os.path.exists(os.path.join(runtime_dir, GLASS_MARKER))
+
+
+def extract_palette(image_path, scheme='prefer-dark'):
+    is_dark = (scheme == 'prefer-dark')
+    an = analyse_wallpaper(image_path)
+    blur = glass_blur_active()
+
+    if an['hue'] is None:
+        hue, src_c = 255.0, 0.02          # neutral slate-blue fallback
     else:
-        # Light Mode Ultra-Clear Crystal Liquid Glass (极清晶润微光玻璃)
-        glass_pill_bg = "rgba(255, 255, 255, 0.45)"
-        glass_pill_border = "rgba(255, 255, 255, 0.80)"
-        glass_pill_shadow = "none"
+        hue, src_c = an['hue'], an['chroma']
 
-        panel_solid_top = f"rgba({rgb_str(h, 0.96, min(s * 0.35, 0.20))}, 0.70)"
-        panel_solid_bot = f"rgba({rgb_str(h, 0.90, min(s * 0.40, 0.25))}, 0.58)"
+    muted = src_c < 0.045
+    # accent chroma: Material keeps primary at >= ~48 CAM16 chroma (~0.13 OKLCH) so it never turns muddy
+    cp = 0.06 if muted else max(0.13, min(0.17, src_c * 1.5))
+    cn = max(0.006, min(0.020, src_c * 0.16))                # neutral chroma (tinted greys)
 
-        hover_pill_bg = "rgba(255, 255, 255, 0.65)"
-        hover_pill_border = "rgba(255, 255, 255, 0.95)"
-        hover_pill_shadow = "none"
+    # Material's "dislike" rule: dark yellow-greens (olive/bile) read as muddy as an accent.
+    # Accents in that band are pushed toward leaf green; neutrals keep the wallpaper hue.
+    accent_hue = hue
+    if 95.0 <= hue < 134.0:
+        accent_hue = 134.0 + (hue - 95.0) * 0.15
 
-        active_pill_bg = f"rgba({rgb_str(h, 0.45, min(s * 1.10, 0.75))}, 0.35)"
-        active_pill_border = f"rgba({rgb_str(h, 0.45, min(s * 1.10, 0.75))}, 0.75)"
-        active_pill_shadow = "none"
+    def P(L, C=None):
+        return Tone(L, cp if C is None else C, accent_hue)
 
-        popup_bg = f"rgba({rgb_str(h, 0.95, min(s * 0.35, 0.20))}, 0.65)"
-        popup_border = "rgba(255, 255, 255, 0.85)"
+    def N(L, k=1.0):
+        return Tone(L, cn * k, hue)
 
-        card_glass_bg = "rgba(255, 255, 255, 0.65)"
-        card_glass_border = "rgba(255, 255, 255, 0.90)"
-        card_hover_bg = "rgba(255, 255, 255, 0.85)"
-        card_hover_border = "rgba(255, 255, 255, 0.98)"
+    def ink_set(light_ink):
+        """Token set for a glass surface. light_ink: white text on smoky glass (dark look);
+        otherwise dark text on clear/milky glass (light look)."""
+        if light_ink:
+            t = dict(text=N(0.975, 0.4), glass=N(0.25, 1.6), popup_glass=N(0.22, 1.6),
+                     accent=P(0.83), accent_hover=P(0.87), accent_chip=P(0.74), accent_chip_hover=P(0.69),
+                     on_accent=P(0.24, cp * 0.7),
+                     rim='rgba(255, 255, 255, 0.22)', rim_strong='rgba(255, 255, 255, 0.34)',
+                     border='rgba(255, 255, 255, 0.18)', border_strong='rgba(255, 255, 255, 0.30)',
+                     card='rgba(255, 255, 255, 0.08)', card_hover='rgba(255, 255, 255, 0.14)',
+                     chip='rgba(255, 255, 255, 0.10)', chip_hover='rgba(255, 255, 255, 0.22)',
+                     worst_behind=1.0)
+            if blur:
+                t.update(sat=1.45, bright_range=(1.0, 1.0), pill=(0.03, 0.03), pop=(0.06, 0.06),
+                         dock=(0.06, 0.06))
+            else:
+                t.update(sat=1.0, bright_range=(1.0, 1.0), pill=(0.06, 0.38), pop=(0.26, 0.52),
+                         dock=(0.22, 0.45))
+        else:
+            ink = N(0.30).rgb_str()
+            t = dict(text=N(0.17, 1.2), glass=N(0.985, 0.5), popup_glass=N(0.975, 0.6),
+                     accent=P(0.52), accent_hover=P(0.48), accent_chip=P(0.44), accent_chip_hover=P(0.40),
+                     on_accent=Tone(0.99, 0.0, hue),
+                     rim='rgba(255, 255, 255, 0.85)', rim_strong='rgba(255, 255, 255, 0.95)',
+                     border='rgba(255, 255, 255, 0.42)', border_strong='rgba(255, 255, 255, 0.60)',
+                     card=f'rgba({ink}, 0.06)', card_hover=f'rgba({ink}, 0.11)',
+                     chip=f'rgba({ink}, 0.07)', chip_hover=f'rgba({ink}, 0.15)',
+                     worst_behind=0.0)
+            if blur:
+                t.update(sat=1.35, bright_range=(1.0, 1.0), pill=(0.03, 0.03), pop=(0.06, 0.06),
+                         dock=(0.06, 0.06))
+            else:
+                t.update(sat=1.0, bright_range=(1.0, 1.0), pill=(0.04, 0.40), pop=(0.26, 0.55),
+                         dock=(0.22, 0.45))
+        # text on the filled accent must read (WCAG 4.5)
+        for _ in range(12):
+            if contrast(t['accent'].Y, t['on_accent'].Y) >= 4.5:
+                break
+            t['accent'] = P(t['accent'].L + (0.02 if light_ink else -0.02))
+        return t
 
-        bg_surface = glass_pill_bg
-        bg_solid = popup_bg
-        bg_overview = f"rgba({rgb_str(h, 0.96, min(s * 0.3, 0.20))}, 0.30)"
+    def luma_limit(t, kind, target):
+        """Encoded backdrop luma the shader must clamp to (max for light text, min for dark text)
+        so text over (tint + backdrop) meets the target at every pixel."""
+        glass_tone = t['glass'] if kind == 'pill' else t['popup_glass']
+        a = t[kind][0]
+        g = _enc(glass_tone.Y)
+        need = _enc(max(0.0, _need_y(t['text'].Y, glass_tone.Y, target)))
+        return max(0.05, min(1.0, (need - a * g) / max(1e-6, 1 - a)))
 
-        accent_rgb = rgb_str(h, 0.42, min(s * 1.15, 0.78))
-        text_color = f"rgb({rgb_str(h, 0.12, min(s, 0.20))})"
-        subtitle_color = f"rgba({rgb_str(h, 0.18, min(s, 0.20))}, 0.78)"
-        hover_text = text_color
+    def solve_surface(t, light_ink, y_hi, y_lo, target, kind, y_mid=None):
+        glass_tone = t['glass'] if kind == 'pill' else t['popup_glass']
+        pref, cap = t[kind]
+        if blur:
+            # Live per-pixel adaptation in the shader; the cost is how much of the backdrop it
+            # has to bend (darken for light text, lift for dark text) across the region.
+            lim = luma_limit(t, kind, target)
+            samples = [_enc(y) for y in (y_lo, y_mid if y_mid is not None else (y_lo + y_hi) / 2, y_hi)]
+            if light_ink:
+                cost = sum(max(0.0, v - lim) for v in samples) / 3
+            else:
+                cost = sum(max(0.0, lim - v) for v in samples) / 3
+            return pref, 1.0, cost, lim
+        behind = y_hi if light_ink else y_lo
+        alpha, bright = solve_glass(glass_tone.Y, t['text'].Y, behind, target, pref, cap, t['bright_range'])
+        if kind == 'pop':
+            # popups can also sit over application windows: stay legible (3:1) over pure white / black
+            wa, wb = solve_glass(glass_tone.Y, t['text'].Y, t['worst_behind'], 3.0, pref, cap, t['bright_range'])
+            if light_ink:
+                bright = min(bright, wb)
+                wa = solve_glass_alpha(glass_tone.Y, t['text'].Y, min(1.0, _enc(1.0) * bright), 3.0, pref, cap)
+            alpha = max(alpha, wa)
+        # how far the glass is from clear: tint + darkening (lifting costs less than darkening)
+        cost = alpha + (1.0 - bright if bright < 1.0 else (bright - 1.0) * 0.3)
+        return alpha, bright, cost, None
 
-    return {
-        'bg_surface': bg_surface,
-        'bg_solid': bg_solid,
-        'bg_overview': bg_overview,
-        'glass_pill_bg': glass_pill_bg,
-        'glass_pill_border': glass_pill_border,
-        'glass_pill_shadow': glass_pill_shadow,
-        'panel_solid_top': panel_solid_top,
-        'panel_solid_bot': panel_solid_bot,
-        'hover_pill_bg': hover_pill_bg,
-        'hover_pill_border': hover_pill_border,
-        'hover_pill_shadow': hover_pill_shadow,
-        'active_pill_bg': active_pill_bg,
-        'active_pill_border': active_pill_border,
-        'active_pill_shadow': active_pill_shadow,
-        'popup_bg': popup_bg,
-        'popup_border': popup_border,
-        'card_glass_bg': card_glass_bg,
-        'card_glass_border': card_glass_border,
-        'card_hover_bg': card_hover_bg,
-        'card_hover_border': card_hover_border,
-        'accent_rgb': accent_rgb,
-        'text_color': text_color,
-        'subtitle_color': subtitle_color,
-        'hover_text': hover_text,
-        'is_dark': is_dark,
-        'hue': round(h * 360, 1),
-        'hue2': round(h2 * 360, 1),
-        'h_val': h,
-        's_val': s,
-        'l_val': l_avg,
+    def choose(y_hi, y_lo, target, kind, margin, y_mid=None):
+        """Glass follows what is behind it, like Liquid Glass: over a bright wallpaper the text
+        turns dark so the glass can stay clear; over a dark one it turns light. The system scheme
+        wins unless the other ink is clearly more transparent."""
+        cands = {}
+        for light_ink in (True, False):
+            t = ink_set(light_ink)
+            cands[light_ink] = (t,) + solve_surface(t, light_ink, y_hi, y_lo, target, kind, y_mid)
+        pref_ink = is_dark
+        other = not pref_ink
+        pick = other if cands[other][3] < cands[pref_ink][3] - margin else pref_ink
+        t, alpha, bright, _cost, lim = cands[pick]
+        glass_tone = t['glass'] if kind == 'pill' else t['popup_glass']
+        limits = {
+            'lmax': round(lim, 3) if (lim is not None and pick) else 1.0,
+            'lmin': round(lim, 3) if (lim is not None and not pick) else 0.0,
+            'lift': [round(v / 255.0, 3) for v in glass_tone.rgb],
+        }
+        return pick, t, alpha, bright, limits
+
+    pill_light_ink, pt, pill_alpha, pill_bright, pill_lim = choose(
+        an['bar_y_hi'], an['bar_y_lo'], PILL_TEXT_CONTRAST, 'pill', 0.05 if blur else 0.08, an.get('bar_y_mid'))
+    pop_light_ink, ot, pop_alpha, pop_bright, pop_lim = choose(
+        an['popup_y_hi'], an['popup_y_lo'], POPUP_TEXT_CONTRAST + 0.5, 'pop', 0.08 if blur else 0.25,
+        an.get('popup_y_mid'))
+    # Overview dash: icons only, so a lower target; glass decides its own look from the backdrop
+    dock_light_ink, dt, dock_alpha, dock_bright, dock_lim = choose(
+        an['dock_y_hi'], an['dock_y_lo'], 3.0, 'dock', 0.05 if blur else 0.15, an.get('dock_y_mid'))
+    dock_tokens = {
+        'bg': dt['popup_glass'].a(dock_alpha),
+        'border': dt['border'],
+        'bright': round(dock_bright, 3),
+        'sat': dt['sat'],
+        'lim': dock_lim,
+        'gloss': 0.8 if dock_light_ink else 0.65,
+        'alpha': round(dock_alpha, 2),
+    }
+    # Scrim over the drawer wallpaper: white icon labels need >= 3:1 against the brighter parts
+    grid_enc = _enc(an['grid_y_p75'])
+    need_enc = _enc((1.05 / 3.0) - 0.05)
+    # (capped low: the wallpaper should stay the wallpaper; the label shadow carries the rest)
+    scrim = 0.0 if grid_enc <= need_enc else min(0.22, 1.0 - need_enc / grid_enc)
+
+    glass_bright = pill_bright
+    glass_sat = ot['sat']
+
+    # The popup set provides the base tokens (quick settings, menus, calendar)
+    text, glass, popup_glass = ot['text'], pt['glass'], ot['popup_glass']
+    accent, accent_hover = ot['accent'], ot['accent_hover']
+    accent_chip, accent_chip_hover = ot['accent_chip'], ot['accent_chip_hover']
+    on_accent = ot['on_accent']
+    rim, rim_strong = ot['rim'], ot['rim_strong']
+    border, border_strong = ot['border'], ot['border_strong']
+    card, card_hover, chip, chip_hover = ot['card'], ot['card_hover'], ot['chip'], ot['chip_hover']
+    pop_cap = ot['pop'][1]
+
+    pill_tokens = {
+        'text': pt['text'].hex(),
+        'pill_bg': pt['glass'].a(pill_alpha),
+        'pill_hover_bg': pt['glass'].a(min(pt['pill'][1] + 0.08, pill_alpha + 0.10)),
+        'pill_active_bg': pt['accent'].a(0.62 if blur else 0.70),
+        'pill_active_fg': pt['on_accent'].hex(),
+        'border': pt['border'], 'border_strong': pt['border_strong'],
+        'rim': pt['rim'], 'rim_strong': pt['rim_strong'],
+        # light ink: soft drop shadow lifts the clear pill off the wallpaper; dark glass: inner rim
+        'pill_shadow': ('none' if pill_light_ink
+                        else f'0 1px 3px 0 rgba({N(0.20).rgb_str()}, 0.14)'),
+        'bright': round(pill_bright, 3),
+        'sat': pt['sat'],
+        'lim': pill_lim,
+        'gloss': 0.9 if pill_light_ink else 0.75,
     }
 
-def generate_gnome_shell_css(palette):
-    """Generate Ultra-Clear Crystal Liquid Glass stylesheet for GNOME Shell (Top bar + Quick Settings + Popups)."""
-    hover_text = palette.get('hover_text', '#ffffff')
-    return f"""/* GNOME Shell Material Design 3 (M3) Ultra-Clear Crystal Liquid Glass Theme */
+    # Legacy HLS hue/sat so the terminal / GTK helpers keep a consistent family
+    rr, gg, bb = (v / 255.0 for v in P(0.65).rgb)
+    h_hls, _l, s_hls = colorsys.rgb_to_hls(rr, gg, bb)
 
-.quick-settings .user-icon {{
-  icon-size: 5em;
-}}
+    return {
+        'is_dark': is_dark,
+        'hue': round(hue, 1),
+        'chroma': round(src_c, 4),
+        'muted': muted,
+        'accent_enum': 'slate' if muted else nearest_gnome_accent(accent_hue, src_c),
+        'blur': blur,
+        'glass_bright': glass_bright,
+        'pill_bright': round(pill_bright, 3),
+        'popup_bright': round(pop_bright, 3),
+        'popup_lim': pop_lim,
+        'dock': dock_tokens,
+        'scrim': round(scrim, 2),
+        'glass_sat': glass_sat,
+        'pill_alpha': round(pill_alpha, 2),
+        'popup_alpha': round(pop_alpha, 2),
+        'pill_ink': 'light' if pill_light_ink else 'dark',
+        'popup_ink': 'light' if pop_light_ink else 'dark',
+        'pill': pill_tokens,
+        'popup_gloss': 0.8 if pop_light_ink else 0.65,
+        'analysis': an,
+        # tones (objects) for other generators
+        'T': {'text': text, 'glass': glass, 'popup_glass': popup_glass, 'accent': accent,
+              'on_accent': on_accent, 'P': P, 'N': N},
+        # CSS tokens
+        'text': text.hex(),
+        'text_dim': text.a(0.72),
+        'text_faint': text.a(0.50),
+        'popup_bg': popup_glass.a(pop_alpha),
+        'submenu_bg': popup_glass.a(min(pop_cap + 0.15, pop_alpha + 0.15)),
+        'rim': rim, 'rim_strong': rim_strong,
+        'border': border, 'border_strong': border_strong,
+        'card': card, 'card_hover': card_hover,
+        'chip': chip, 'chip_hover': chip_hover,
+        'accent': accent.hex(), 'accent_hover': accent_hover.hex(),
+        'accent_chip': accent_chip.hex(), 'accent_chip_hover': accent_chip_hover.hex(),
+        'on_accent': on_accent.hex(), 'on_accent_dim': on_accent.a(0.78),
+        'accent_tint': accent.a(0.22 if pop_light_ink else 0.16),
+        'accent_tint_strong': accent.a(0.32 if pop_light_ink else 0.24),
+        'focus': accent.a(0.85),
+        # legacy keys
+        'h_val': h_hls, 's_val': max(0.2, min(0.8, s_hls)),
+        'accent_rgb': accent.rgb_str(),
+    }
 
-.quick-settings .user-widget {{
-  spacing: 36px;
-  padding-bottom: 12px;
-}}
 
-.quick-settings .user-widget-label {{
-  font-size: x-large;
-  font-weight: normal;
-}}
+def generate_gnome_shell_css(p):
+    """GNOME Shell stylesheet: liquid-glass top bar, quick settings and popups.
+    Every colour comes from the palette; nothing is hard-coded white/black, so it holds in
+    both light and dark schemes. The top bar uses its own token set (p['pill']) because its
+    text colour adapts to the wallpaper behind it independently of the popups."""
+    q = p['pill']
+    return f"""/* Lumina Monet liquid glass - generated by monet-panel.py, do not edit by hand.
+   scheme={'dark' if p['is_dark'] else 'light'} hue={p['hue']} chroma={p['chroma']} blur={p['blur']}
+   pill_alpha={p['pill_alpha']} ({p['pill_ink']} text) popup_alpha={p['popup_alpha']} ({p['popup_ink']} text) */
 
-/* =========================================================
-   1. Main Top Bar: Ultra-Fluid Floating Container
-   ========================================================= */
+.quick-settings .user-icon {{ icon-size: 5em; }}
+.quick-settings .user-widget {{ spacing: 36px; padding-bottom: 12px; }}
+.quick-settings .user-widget-label {{ font-size: x-large; font-weight: normal; }}
+
+/* ---------- 1. Top bar: transparent strip carrying floating glass pills ---------- */
 #panel {{
   background-color: transparent !important;
   background-gradient-direction: none !important;
   box-shadow: none !important;
   border: none !important;
-  font-family: 'Google Sans', sans-serif !important;
+  font-family: "Google Sans Flex", sans-serif !important;
   height: 2.55em !important;
   padding: 4px 8px !important;
-  transition: background-color 220ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 220ms ease !important;
 }}
 
-/* Maximized window state: Ethereal Smoked Glass Top Bar */
-#panel.solid {{
-  background-color: {palette['panel_solid_bot']} !important;
-  background-gradient-direction: vertical !important;
-  background-gradient-start: {palette['panel_solid_top']} !important;
-  background-gradient-end: {palette['panel_solid_bot']} !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
-  box-shadow: none !important;
-}}
-
-/* =========================================================
-   2. Floating Crystal Liquid Glass Capsule Pills
-      (100% uniform clarity, zero muddy gradient band in the middle)
-   ========================================================= */
 #panel .panel-button {{
-  background-color: {palette['glass_pill_bg']} !important;
+  background-color: {q['pill_bg']} !important;
   background-gradient-direction: none !important;
-  border: 1px solid {palette['glass_pill_border']} !important;
+  border: 1px solid {q['border']} !important;
   border-radius: 999px !important;
-  box-shadow: none !important;
-  color: {palette['text_color']} !important;
+  box-shadow: {q['pill_shadow']} !important;
+  color: {q['text']} !important;
   text-shadow: none !important;
   icon-shadow: none !important;
-  font-family: 'Google Sans', sans-serif !important;
   font-weight: 600 !important;
   margin: 2px 4px !important;
   padding: 0 15px !important;
-  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+  transition-duration: 160ms !important;
+  -lumina-blur: 7;
+  -lumina-brightness: {q['bright']};
+  -lumina-saturation: {q['sat']};
+  -lumina-refraction: 9;
+  -lumina-gloss: {q['gloss']};
+  -lumina-max-luma: {q['lim']['lmax']};
+  -lumina-min-luma: {q['lim']['lmin']};
+  -lumina-lift-r: {q['lim']['lift'][0]};
+  -lumina-lift-g: {q['lim']['lift'][1]};
+  -lumina-lift-b: {q['lim']['lift'][2]};
 }}
 
-/* 3. Pill Hover - Smooth Specular Luster Glow */
-#panel .panel-button:focus,
-#panel .panel-button:hover {{
-  background-color: {palette['hover_pill_bg']} !important;
-  background-gradient-direction: none !important;
-  border-color: {palette['hover_pill_border']} !important;
-  box-shadow: none !important;
-  color: {hover_text} !important;
+#panel .panel-button:hover,
+#panel .panel-button:focus {{
+  background-color: {q['pill_hover_bg']} !important;
+  border-color: {q['border_strong']} !important;
+  color: {q['text']} !important;
 }}
 
-/* 4. Pill Active / Checked - Deep Refractive Crystal Glass */
 #panel .panel-button:active,
 #panel .panel-button:checked,
 #panel .panel-button:overview {{
-  background-color: {palette['active_pill_bg']} !important;
-  background-gradient-direction: none !important;
-  border-color: {palette['active_pill_border']} !important;
-  box-shadow: none !important;
-  color: {hover_text} !important;
+  background-color: {q['pill_active_bg']} !important;
+  border-color: transparent !important;
+  box-shadow: {q['pill_shadow']} !important;
+  color: {q['pill_active_fg']} !important;
 }}
 
-/* 5. Center Date / Time & System Status Icons (Razor-Sharp Clarity) */
 #panel .clock-display {{
   font-weight: 600 !important;
   letter-spacing: 0.3px !important;
   text-shadow: none !important;
 }}
-
+/* Explicit colours: nested labels/icons in the base theme do not reliably inherit */
+#panel .panel-button StLabel,
+#panel .panel-button StIcon,
+#panel .panel-button .clock,
+#panel .panel-button .clock-display,
 #panel .system-status-icon {{
+  color: {q['text']} !important;
   icon-shadow: none !important;
+  text-shadow: none !important;
+}}
+#panel .panel-button:checked StLabel,
+#panel .panel-button:checked StIcon,
+#panel .panel-button:checked .clock,
+#panel .panel-button:checked .clock-display,
+#panel .panel-button:checked .system-status-icon,
+#panel .panel-button:active StLabel,
+#panel .panel-button:active StIcon,
+#panel .panel-button:overview StLabel,
+#panel .panel-button:overview StIcon {{
+  color: {q['pill_active_fg']} !important;
 }}
 
-/* =========================================================
-   6. Ultra-Clear Frosted Glass Popups & Menus
-      (ZERO rectangular shadow halo, seamless organic rounded borders)
-   ========================================================= */
+/* Activities workspace dots follow the text colour */
+#panel .workspace-dot {{ background-color: {q['text']} !important; }}
+
+/* Vitals draws its own inner pill; flatten it so there is one glass layer */
+#panel .vitals-panel-menu,
+#panel .vitals-panel-menu:hover {{
+  background-color: transparent !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}}
+
+/* ---------- 2. Popups: one rounded glass sheet, no box-pointer rectangle ---------- */
 .popup-menu,
 .popup-menu-boxpointer,
 .candidate-popup-boxpointer {{
   background-color: transparent !important;
-  background: none !important;
   box-shadow: none !important;
   border: none !important;
   -arrow-rise: 0px !important;
@@ -407,328 +768,328 @@ def generate_gnome_shell_css(palette):
   -arrow-base: 0px !important;
   -arrow-background-color: transparent !important;
   -arrow-border-color: transparent !important;
-  -boxpointer-gap: 0px !important;
+  -boxpointer-gap: 4px !important;
 }}
 
 .popup-menu-content,
 .candidate-popup-content {{
-  background-color: {palette['popup_bg']} !important;
+  background-color: {p['popup_bg']} !important;
   background-gradient-direction: none !important;
-  border: 1px solid {palette['popup_border']} !important;
+  border: 1px solid {p['border_strong']} !important;
   border-radius: 28px !important;
   box-shadow: none !important;
   padding: 14px !important;
-  color: {palette['text_color']} !important;
-  font-family: 'Google Sans', sans-serif !important;
-  transition: background-color 200ms ease, border-color 200ms ease !important;
+  color: {p['text']} !important;
+  -lumina-blur: 14;
+  -lumina-brightness: {p['popup_bright']};
+  -lumina-saturation: {p['glass_sat']};
+  -lumina-refraction: 12;
+  -lumina-gloss: {p['popup_gloss']};
+  -lumina-max-luma: {p['popup_lim']['lmax']};
+  -lumina-min-luma: {p['popup_lim']['lmin']};
+  -lumina-lift-r: {p['popup_lim']['lift'][0]};
+  -lumina-lift-g: {p['popup_lim']['lift'][1]};
+  -lumina-lift-b: {p['popup_lim']['lift'][2]};
 }}
 
-.quick-settings,
-.quick-settings-menu,
-.quick-settings-grid,
-.datemenu-popover {{
-  border-radius: 28px !important;
+.popup-menu-content .popup-menu-item,
+.popup-menu .popup-menu-item {{
+  color: {p['text']} !important;
+  border-radius: 14px !important;
+  transition-duration: 140ms !important;
+}}
+.popup-menu-content .popup-menu-item:hover,
+.popup-menu-content .popup-menu-item:focus,
+.popup-menu-content .popup-menu-item:selected {{
+  background-color: {p['accent_tint']} !important;
+  color: {p['text']} !important;
+}}
+.popup-menu-content .popup-menu-item:active,
+.popup-menu-content .popup-menu-item:checked {{
+  background-color: {p['accent_tint_strong']} !important;
+}}
+.popup-separator-menu-item .popup-separator-menu-item-separator,
+.popup-separator-menu-item-separator {{
+  background-color: {p['border_strong']} !important;
+}}
+.popup-sub-menu {{
+  background-color: {p['card']} !important;
+  border-radius: 14px !important;
   box-shadow: none !important;
 }}
 
-/* =========================================================
-   7. Quick Settings Compound Toggles (Wi-Fi, Bluetooth, Audio)
-      Integrated, Seamless & Soft Organic Capsule
-   ========================================================= */
-/* Single standalone toggle (Night Light, Dark Style, Airplane Mode) */
+.quick-settings, .quick-settings-menu, .quick-settings-grid, .datemenu-popover {{
+  box-shadow: none !important;
+}}
+.quick-settings {{ border-radius: 28px !important; }}
+
+/* ---------- 3. Quick settings: system row (battery, screenshot, settings, lock, power) ---------- */
+.quick-settings-system-item .icon-button,
+.quick-settings-system-item .power-item,
+.quick-settings .icon-button {{
+  background-color: {p['card']} !important;
+  border: 1px solid {p['border']} !important;
+  color: {p['text']} !important;
+  box-shadow: none !important;
+  transition-duration: 140ms !important;
+}}
+.quick-settings-system-item .icon-button:hover,
+.quick-settings-system-item .icon-button:focus,
+.quick-settings .icon-button:hover,
+.quick-settings .icon-button:focus {{
+  background-color: {p['card_hover']} !important;
+  border-color: {p['border_strong']} !important;
+}}
+.quick-settings-system-item .icon-button:active,
+.quick-settings .icon-button:checked {{
+  background-color: {p['accent']} !important;
+  color: {p['on_accent']} !important;
+}}
+
+/* ---------- 4. Quick toggles ----------
+   off: quiet glass card.   on: filled accent - unmistakable at a glance.
+   Toggles with a menu get a separate, softly rounded arrow capsule (no hard divider line):
+   off -> faint capsule, on -> deeper accent capsule; hover brightens it. */
 .quick-toggle {{
-  background-color: {palette['card_glass_bg']} !important;
+  background-color: {p['card']} !important;
   background-gradient-direction: none !important;
-  border: 1px solid {palette['card_glass_border']} !important;
-  border-radius: 22px !important;
+  border: 1px solid {p['border']} !important;
+  border-radius: 999px !important;
   box-shadow: none !important;
-  color: {palette['text_color']} !important;
-  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+  color: {p['text']} !important;
+  transition-duration: 180ms !important;
 }}
-
 .quick-toggle:hover {{
-  background-color: {palette['card_hover_bg']} !important;
-  background-gradient-direction: none !important;
-  border-color: {palette['card_hover_border']} !important;
-  box-shadow: none !important;
+  background-color: {p['card_hover']} !important;
+  border-color: {p['border_strong']} !important;
 }}
-
 .quick-toggle:checked {{
-  background-color: {palette['active_pill_bg']} !important;
-  background-gradient-direction: none !important;
-  border: 1px solid {palette['active_pill_border']} !important;
-  box-shadow: none !important;
-  color: {hover_text} !important;
+  background-color: {p['accent']} !important;
+  border-color: transparent !important;
+  color: {p['on_accent']} !important;
+}}
+.quick-toggle:checked:hover {{
+  background-color: {p['accent_hover']} !important;
 }}
 
-/* Compound container (e.g. Wi-Fi: [ Wi-Fi Network Name | > ]) */
+/* Compound toggle (Wi-Fi, Bluetooth, Power mode...): the outer shell paints the pill,
+   the left part is a transparent hit area, the arrow is an inset capsule. */
 .quick-toggle-has-menu {{
-  background-color: {palette['card_glass_bg']} !important;
-  background-gradient-direction: none !important;
-  border: 1px solid {palette['card_glass_border']} !important;
-  border-radius: 22px !important;
+  background-color: {p['card']} !important;
+  border: 1px solid {p['border']} !important;
+  border-radius: 999px !important;
   box-shadow: none !important;
   padding: 0 !important;
-  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+  transition-duration: 180ms !important;
 }}
-
-.quick-toggle-has-menu:hover {{
-  background-color: {palette['card_hover_bg']} !important;
-  border-color: {palette['card_hover_border']} !important;
-}}
-
 .quick-toggle-has-menu:checked {{
-  background-color: {palette['active_pill_bg']} !important;
-  background-gradient-direction: none !important;
-  border-color: {palette['active_pill_border']} !important;
+  background-color: {p['accent']} !important;
+  border-color: transparent !important;
 }}
 
-/* Left toggle portion inside compound button */
 .quick-toggle-has-menu .quick-toggle {{
   background-color: transparent !important;
-  background-gradient-direction: none !important;
   border: none !important;
-  box-shadow: none !important;
-  border-radius: 22px 0 0 22px !important;
-  color: {palette['text_color']} !important;
-  transition: background-color 150ms ease !important;
+  border-radius: 999px 0 0 999px !important;
+  color: {p['text']} !important;
 }}
-
-.quick-toggle-has-menu .quick-toggle:rtl {{
-  border-radius: 0 22px 22px 0 !important;
-}}
-
-.quick-toggle-has-menu .quick-toggle:hover {{
-  background-color: rgba(255, 255, 255, 0.12) !important;
-  border: none !important;
-  box-shadow: none !important;
-}}
-
+.quick-toggle-has-menu .quick-toggle:rtl {{ border-radius: 0 999px 999px 0 !important; }}
+.quick-toggle-has-menu .quick-toggle:hover {{ background-color: {p['card_hover']} !important; }}
 .quick-toggle-has-menu .quick-toggle:checked {{
   background-color: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-  color: {hover_text} !important;
+  color: {p['on_accent']} !important;
+}}
+.quick-toggle-has-menu .quick-toggle:checked:hover {{
+  background-color: {p['accent_hover']} !important;
 }}
 
-/* Soft, seamless transition between toggle and '>' arrow - remove rigid vertical bar */
 .quick-toggle-has-menu .quick-toggle-separator {{
-  width: 0px !important;
-  min-width: 0px !important;
-  margin: 0 !important;
+  width: 0 !important;
   background-color: transparent !important;
-  border: none !important;
 }}
 
-/* Right '>' menu expand button */
 .quick-toggle-has-menu .quick-toggle-menu-button {{
-  background-color: transparent !important;
-  background-gradient-direction: none !important;
+  background-color: {p['chip']} !important;
   border: none !important;
+  border-radius: 999px !important;
   box-shadow: none !important;
-  border-radius: 0 22px 22px 0 !important;
-  color: {palette['text_color']} !important;
-  padding: 0 14px !important;
-  transition: background-color 150ms ease, color 150ms ease !important;
+  color: {p['text']} !important;
+  margin: 5px 5px 5px 0 !important;
+  padding: 0 10px !important;
+  transition-duration: 160ms !important;
 }}
-
-.quick-toggle-has-menu .quick-toggle-menu-button:rtl {{
-  border-radius: 22px 0 0 22px !important;
-}}
-
+.quick-toggle-has-menu .quick-toggle-menu-button:rtl {{ margin: 5px 0 5px 5px !important; }}
 .quick-toggle-has-menu .quick-toggle-menu-button:hover,
 .quick-toggle-has-menu .quick-toggle-menu-button:focus {{
-  background-color: rgba(255, 255, 255, 0.18) !important;
-  border: none !important;
-  box-shadow: none !important;
-  color: #FFFFFF !important;
+  background-color: {p['chip_hover']} !important;
+  color: {p['text']} !important;
 }}
-
 .quick-toggle-has-menu .quick-toggle-menu-button:checked {{
-  background-color: transparent !important;
-  color: {hover_text} !important;
+  background-color: {p['accent_chip']} !important;
+  color: {p['on_accent']} !important;
+}}
+.quick-toggle-has-menu .quick-toggle-menu-button:checked:hover,
+.quick-toggle-has-menu .quick-toggle-menu-button:checked:focus {{
+  background-color: {p['accent_chip_hover']} !important;
+  color: {p['on_accent']} !important;
 }}
 
-/* Titles and subtitles inside quick toggles */
-.quick-toggle .quick-toggle-title,
-.quick-toggle-has-menu .quick-toggle-title {{
-  font-weight: 600 !important;
-  color: {palette['text_color']} !important;
-}}
+.quick-toggle .quick-toggle-title {{ font-weight: 600 !important; color: inherit !important; }}
+.quick-toggle .quick-toggle-subtitle {{ font-weight: 400 !important; color: {p['text_dim']} !important; }}
+.quick-toggle .quick-toggle-icon {{ color: inherit !important; }}
+.quick-toggle:checked .quick-toggle-subtitle {{ color: {p['on_accent_dim']} !important; }}
 
-.quick-toggle .quick-toggle-subtitle,
-.quick-toggle-has-menu .quick-toggle-subtitle {{
-  font-weight: 400 !important;
-  color: {palette['subtitle_color']} !important;
-}}
-
-.quick-toggle:checked .quick-toggle-title,
-.quick-toggle-has-menu:checked .quick-toggle-title {{
-  color: {hover_text} !important;
-}}
-
-.quick-toggle:checked .quick-toggle-subtitle,
-.quick-toggle-has-menu:checked .quick-toggle-subtitle {{
-  color: rgba(255, 255, 255, 0.88) !important;
-}}
-
-/* =========================================================
-   8. Quick Settings Submenu Dropdown (Wi-Fi Networks / Bluetooth Devices)
-      Smooth Crystal Glass Dropdown with Organic Rounded Corners
-   ========================================================= */
+/* ---------- 5. Expanded toggle menu (Wi-Fi networks, power modes...) ----------
+   It slides over the dimmed toggle grid, so it gets its own, denser glass sheet. */
 .quick-toggle-menu {{
-  background-color: {palette['card_glass_bg']} !important;
-  background-gradient-direction: none !important;
-  border: 1px solid {palette['card_glass_border']} !important;
+  background-color: {p['submenu_bg']} !important;
+  border: 1px solid {p['border_strong']} !important;
+  -lumina-blur: 14;
+  -lumina-brightness: {p['popup_bright']};
+  -lumina-saturation: {p['glass_sat']};
+  -lumina-refraction: 5;
+  -lumina-gloss: {p['popup_gloss']};
+  -lumina-max-luma: {p['popup_lim']['lmax']};
+  -lumina-min-luma: {p['popup_lim']['lmin']};
+  -lumina-lift-r: {p['popup_lim']['lift'][0]};
+  -lumina-lift-g: {p['popup_lim']['lift'][1]};
+  -lumina-lift-b: {p['popup_lim']['lift'][2]};
   border-radius: 24px !important;
   box-shadow: none !important;
   margin: 10px 4px 6px !important;
   padding: 14px 16px !important;
-  color: {palette['text_color']} !important;
+  color: {p['text']} !important;
 }}
-
-.quick-toggle-menu .header {{
-  padding-bottom: 12px !important;
-  spacing-rows: 4px !important;
-  spacing-columns: 12px !important;
-}}
-
-.quick-toggle-menu .header .title {{
-  font-weight: 700 !important;
-  color: {palette['text_color']} !important;
-}}
-
-.quick-toggle-menu .header .subtitle {{
-  color: {palette['subtitle_color']} !important;
-}}
-
+.quick-toggle-menu .header {{ padding-bottom: 12px !important; spacing-rows: 4px !important; spacing-columns: 12px !important; }}
+.quick-toggle-menu .header .title {{ font-weight: 700 !important; color: {p['text']} !important; }}
+.quick-toggle-menu .header .subtitle {{ color: {p['text_dim']} !important; }}
 .quick-toggle-menu .header .icon {{
   border-radius: 999px !important;
   padding: 8px !important;
-  background-color: rgba(255, 255, 255, 0.12) !important;
+  background-color: {p['card_hover']} !important;
+  color: {p['text']} !important;
+}}
+.quick-toggle-menu .header .icon.active {{
+  background-color: {p['accent']} !important;
+  color: {p['on_accent']} !important;
+}}
+.quick-toggle-menu .popup-menu-item {{ border-radius: 14px !important; padding: 8px 12px !important; margin: 2px 0 !important; }}
+
+/* ---------- 6. Sliders ---------- */
+.quick-slider {{
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}}
+.slider {{
+  -slider-background-color: {p['card_hover']} !important;
+  -slider-active-background-color: {p['accent']} !important;
+  -slider-handle-border-color: transparent !important;
+  color: {p['text']} !important;
 }}
 
-.quick-toggle-menu .header .icon.active {{
-  background-color: {palette['active_pill_bg']} !important;
+/* ---------- 8. Overview: wallpaper under the app drawer, glass dock ---------- */
+.lumina-overview-scrim {{ background-color: rgba(0, 0, 0, {p['scrim']}); }}
+.icon-grid StLabel {{
+  color: #FFFFFF !important;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.65) !important;
+}}
+/* Folder tiles: a light glass card instead of an opaque grey block */
+.app-folder {{
+  background-color: rgba(255, 255, 255, 0.14) !important;
+  border: 1px solid rgba(255, 255, 255, 0.22) !important;
   color: #FFFFFF !important;
 }}
-
-.quick-toggle-menu .popup-menu-item {{
-  border-radius: 14px !important;
-  padding: 8px 12px !important;
-  margin: 2px 0 !important;
-  transition: background-color 150ms ease !important;
+.app-folder:hover, .app-folder:focus {{ background-color: rgba(255, 255, 255, 0.22) !important; }}
+.app-folder:active, .app-folder:checked, .app-folder:highlighted, .app-folder:selected {{
+  background-color: rgba(255, 255, 255, 0.28) !important;
 }}
-
-.quick-toggle-menu .popup-menu-item:hover,
-.quick-toggle-menu .popup-menu-item:focus,
-.quick-toggle-menu .popup-menu-item:selected {{
-  background-color: rgba({palette['accent_rgb']}, 0.22) !important;
-  color: {hover_text} !important;
+/* Dock icons sit straight on the glass; only hover / pressed / focused get a soft glass chip */
+#dash .dash-item-container .show-apps .overview-icon,
+#dash .dash-item-container .overview-tile .overview-icon {{
+  background-color: transparent !important;
 }}
-
-/* =========================================================
-   9. Quick Settings Sliders (Brightness, Audio Volume)
-   ========================================================= */
-.quick-slider {{
-  background-color: {palette['card_glass_bg']} !important;
-  background-gradient-direction: none !important;
-  border: 1px solid {palette['card_glass_border']} !important;
-  border-radius: 22px !important;
+#dash .dash-item-container .show-apps:hover .overview-icon,
+#dash .dash-item-container .overview-tile:hover .overview-icon,
+#dash .dash-item-container .show-apps:focus .overview-icon,
+#dash .dash-item-container .overview-tile:focus .overview-icon {{
+  background-color: rgba(255, 255, 255, 0.18) !important;
+}}
+#dash .dash-item-container .show-apps:active .overview-icon,
+#dash .dash-item-container .overview-tile:active .overview-icon,
+#dash .dash-item-container .show-apps:checked .overview-icon,
+#dash .dash-item-container .overview-tile:checked .overview-icon {{
+  background-color: rgba(255, 255, 255, 0.26) !important;
+}}
+#dash .dash-separator {{ background-color: rgba(255, 255, 255, 0.25) !important; }}
+#dash .dash-background {{
+  background-color: {p['dock']['bg']} !important;
+  border: 1px solid {p['dock']['border']} !important;
+  border-radius: 28px !important;
   box-shadow: none !important;
-  padding: 4px 8px !important;
+  -lumina-blur: 14;
+  -lumina-brightness: {p['dock']['bright']};
+  -lumina-saturation: {p['dock']['sat']};
+  -lumina-refraction: 10;
+  -lumina-gloss: {p['dock']['gloss']};
+  -lumina-max-luma: {p['dock']['lim']['lmax']};
+  -lumina-min-luma: {p['dock']['lim']['lmin']};
+  -lumina-lift-r: {p['dock']['lim']['lift'][0]};
+  -lumina-lift-g: {p['dock']['lim']['lift'][1]};
+  -lumina-lift-b: {p['dock']['lim']['lift'][2]};
 }}
 
-/* =========================================================
-   10. Calendar, Messages & Notification Cards
-   ========================================================= */
-.events-button,
-.world-clocks-button,
-.weather-button,
-.message {{
-  background-color: {palette['card_glass_bg']} !important;
-  background-gradient-direction: none !important;
-  border: 1px solid {palette['card_glass_border']} !important;
+/* ---------- 7. Calendar, notifications ---------- */
+.events-button, .world-clocks-button, .weather-button, .message {{
+  background-color: {p['card']} !important;
+  border: 1px solid {p['border']} !important;
   box-shadow: none !important;
   border-radius: 20px !important;
-  color: {palette['text_color']} !important;
+  color: {p['text']} !important;
 }}
-
-.events-button:hover,
-.world-clocks-button:hover,
-.weather-button:hover,
-.message:hover {{
-  background-color: {palette['card_hover_bg']} !important;
-  border-color: {palette['card_hover_border']} !important;
-  box-shadow: none !important;
+.events-button:hover, .world-clocks-button:hover, .weather-button:hover, .message:hover {{
+  background-color: {p['card_hover']} !important;
+  border-color: {p['border_strong']} !important;
 }}
-
-/* General Popup Menu Items */
-.popup-menu-content .popup-menu-item {{
-  border-radius: 14px !important;
-  margin: 1px 0 !important;
-  transition: background-color 150ms ease !important;
+.calendar, .calendar-day, .calendar-month-header .pager-button, .calendar-month-label,
+.datemenu-today-button .day-label, .datemenu-today-button .date-label,
+.events-title, .events-section-title, .world-clocks-header, .weather-header {{
+  color: {p['text']} !important;
 }}
-
-.popup-menu-content .popup-menu-item:hover,
-.popup-menu-content .popup-menu-item:focus,
-.popup-menu-content .popup-menu-item:selected {{
-  background-color: rgba({palette['accent_rgb']}, 0.22) !important;
-  color: {hover_text} !important;
+.calendar-day-base, .calendar-day {{ background-color: transparent !important; }}
+.calendar-day-base:hover, .calendar-day:hover, .calendar-month-header .pager-button:hover,
+.calendar-day-base:focus {{ background-color: {p['card_hover']} !important; }}
+.calendar-month-header .pager-button, .calendar-month-label {{ background-color: {p['card']} !important; }}
+.calendar .calendar-today, .calendar-today {{
+  background-color: {p['accent']} !important;
+  color: {p['on_accent']} !important;
 }}
+.calendar-weekend, .calendar-other-month {{ color: {p['text_dim']} !important; }}
 """
+
 
 def apply_ptyxis_palette(palette):
-    """Generate and apply Monet palette for Ptyxis terminal."""
+    """Ptyxis terminal palette from the same tonal system (terminal stays dark in both schemes)."""
     try:
-        h = palette['h_val']
-        s = palette['s_val']
+        P, N = palette['T']['P'], palette['T']['N']
+        hue = palette['hue']
 
-        bg = hex_color(h, 0.11, min(s * 1.1, 0.28))
-        fg = hex_color(h, 0.90, min(s, 0.10))
-        cursor = hex_color(h, 0.78, min(s * 1.1, 0.75))
+        def hue_tone(h, L, C):
+            return Tone(L, C, h).hex()
 
-        c0 = hex_color(h, 0.15, min(s, 0.15))
-        c1 = "#FF897D"
-        c2 = hex_color(0.32, 0.75, 0.45)
-        c3 = hex_color(h, 0.78, min(s * 1.2, 0.75))
-        c4 = hex_color(0.58, 0.75, 0.55)
-        c5 = hex_color(0.82, 0.75, 0.45)
-        c6 = hex_color(0.48, 0.75, 0.45)
-        c7 = fg
-
-        c8  = hex_color(h, 0.45, min(s, 0.15))
-        c9  = "#FFB4AB"
-        c10 = hex_color(0.32, 0.85, 0.45)
-        c11 = hex_color(h, 0.86, min(s * 1.2, 0.80))
-        c12 = hex_color(0.58, 0.85, 0.60)
-        c13 = hex_color(0.82, 0.85, 0.50)
-        c14 = hex_color(0.48, 0.85, 0.50)
-        c15 = "#FFFFFF"
-
-        palette_content = f"""[Palette]
-Name=Monet
-Background={bg}
-Foreground={fg}
-Cursor={cursor}
-Color0={c0}
-Color1={c1}
-Color2={c2}
-Color3={c3}
-Color4={c4}
-Color5={c5}
-Color6={c6}
-Color7={c7}
-Color8={c8}
-Color9={c9}
-Color10={c10}
-Color11={c11}
-Color12={c12}
-Color13={c13}
-Color14={c14}
-Color15={c15}
-"""
-        atomic_write(PTYXIS_PALETTE_PATH, palette_content)
+        bg = N(0.19, 1.5).hex()
+        fg = N(0.93, 0.5).hex()
+        cursor = P(0.82).hex()
+        normal = [N(0.26, 1.5).hex(), hue_tone(25, 0.70, 0.14), hue_tone(145, 0.76, 0.13),
+                  hue_tone(85, 0.82, 0.13), hue_tone(255, 0.72, 0.12), hue_tone(320, 0.72, 0.12),
+                  hue_tone(200, 0.78, 0.10), fg]
+        bright = [N(0.48, 1.5).hex(), hue_tone(25, 0.78, 0.12), hue_tone(145, 0.84, 0.12),
+                  hue_tone(85, 0.89, 0.12), hue_tone(255, 0.80, 0.11), hue_tone(320, 0.80, 0.11),
+                  hue_tone(200, 0.86, 0.09), N(0.99, 0.2).hex()]
+        _ = hue
+        lines = ['[Palette]', 'Name=Monet', f'Background={bg}', f'Foreground={fg}', f'Cursor={cursor}']
+        lines += [f'Color{i}={c}' for i, c in enumerate(normal + bright)]
+        atomic_write(PTYXIS_PALETTE_PATH, '\n'.join(lines) + '\n')
 
         prof_cmd = ['gsettings', 'get', 'org.gnome.Ptyxis', 'default-profile-uuid']
         prof_uuid = subprocess.check_output(prof_cmd, stderr=subprocess.DEVNULL).decode().strip().strip("'")
@@ -736,177 +1097,107 @@ Color15={c15}
             key_path = f"org.gnome.Ptyxis.Profile:/org/gnome/Ptyxis/Profiles/{prof_uuid}/"
             subprocess.run(['gsettings', 'set', key_path, 'palette', 'monet'], stderr=subprocess.DEVNULL)
             subprocess.run(['gsettings', 'set', key_path, 'opacity', '0.94'], stderr=subprocess.DEVNULL)
-            print(f"[Monet] Configured Ptyxis terminal profile (Opacity: 0.94, Palette: Monet)")
+            print("[Monet] Configured Ptyxis terminal profile (Opacity: 0.94, Palette: Monet)")
     except Exception as e:
         print(f"[Monet] Failed to apply Ptyxis palette: {e}", file=sys.stderr)
 
-def get_gnome_accent_enum(hue_deg):
-    """Map hue to closest GNOME native accent color."""
-    if 345 <= hue_deg or hue_deg < 15:
-        return 'red'
-    elif 15 <= hue_deg < 42:
-        return 'orange'
-    elif 42 <= hue_deg < 68:
-        return 'yellow'
-    elif 68 <= hue_deg < 155:
-        return 'green'
-    elif 155 <= hue_deg < 195:
-        return 'teal'
-    elif 195 <= hue_deg < 250:
-        return 'blue'
-    elif 250 <= hue_deg < 290:
-        return 'purple'
-    elif 290 <= hue_deg < 345:
-        return 'pink'
-    return 'blue'
 
 def apply_gtk_theme(palette):
-    """Generate and apply Monet colors for all Libadwaita / GTK4 & GTK3 apps with 0.92 Acrylic translucency."""
+    """Libadwaita / GTK colours from the same tonal palette as the Shell (light and dark)."""
     try:
-        h = palette['h_val']
-        s = palette['s_val']
-        hue_deg = palette['hue']
-        is_dark = palette.get('is_dark', True)
-
-        # 1. Update native GNOME Accent Color (Folder icons, switches) directly via Gio.Settings
-        accent_enum = get_gnome_accent_enum(hue_deg)
+        P, N = palette['T']['P'], palette['T']['N']
+        is_dark = palette['is_dark']
+        accent_enum = palette['accent_enum']
         try:
-            iface = Gio.Settings.new('org.gnome.desktop.interface')
-            iface.set_string('accent-color', accent_enum)
+            Gio.Settings.new('org.gnome.desktop.interface').set_string('accent-color', accent_enum)
         except Exception:
-            subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'accent-color', accent_enum], stderr=subprocess.DEVNULL)
+            subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'accent-color', accent_enum],
+                           stderr=subprocess.DEVNULL)
 
-        # 2. Derive pixel-perfect Libadwaita named colors with translucent alpha (0.92)
         if is_dark:
-            accent_color = hex_color(h, 0.76, min(s * 1.25, 0.82))
-            accent_fg = hex_color(h, 0.12, 0.20)
-            window_bg = rgba_color(h, 0.12, min(s * 1.1, 0.28), 0.92)
-            window_fg = hex_color(h, 0.90, min(s, 0.10))
-            view_bg = rgba_color(h, 0.09, min(s * 1.1, 0.28), 0.92)
-            card_bg = rgba_color(h, 0.16, min(s * 1.0, 0.25), 0.92)
-            header_bg = rgba_color(h, 0.12, min(s * 1.1, 0.28), 0.92)
-            sidebar_bg = rgba_color(h, 0.10, min(s * 1.1, 0.28), 0.92)
-            secondary_sidebar_bg = rgba_color(h, 0.08, min(s * 1.1, 0.28), 0.92)
+            accent_text = P(0.82)            # links / accent-coloured text on dark surfaces
+            accent_bg = P(0.70)              # suggested buttons, switches
+            accent_fg = P(0.20, 0.04)
+            window_bg, view_bg, card_bg = N(0.21, 1.5), N(0.18, 1.5), N(0.26, 1.5)
+            header_bg, sidebar_bg, side2_bg = N(0.23, 1.5), N(0.19, 1.5), N(0.17, 1.5)
+            fg = N(0.95, 0.4)
         else:
-            accent_color = hex_color(h, 0.44, min(s * 1.25, 0.80))
-            accent_fg = "#FFFFFF"
-            window_bg = rgba_color(h, 0.95, min(s * 0.9, 0.25), 0.92)
-            window_fg = hex_color(h, 0.13, min(s, 0.18))
-            view_bg = rgba_color(h, 0.98, min(s * 0.8, 0.20), 0.92)
-            card_bg = rgba_color(h, 0.99, min(s * 0.7, 0.18), 0.94)
-            header_bg = rgba_color(h, 0.94, min(s * 0.9, 0.25), 0.92)
-            sidebar_bg = rgba_color(h, 0.92, min(s * 0.9, 0.25), 0.92)
-            secondary_sidebar_bg = rgba_color(h, 0.90, min(s * 0.9, 0.25), 0.92)
+            accent_text = P(0.48)
+            accent_bg = P(0.54)
+            accent_fg = Tone(0.99, 0.0, 0)
+            window_bg, view_bg, card_bg = N(0.975, 0.6), N(0.99, 0.4), N(1.0, 0.0)
+            header_bg, sidebar_bg, side2_bg = N(0.955, 0.8), N(0.955, 0.8), N(0.965, 0.7)
+            fg = N(0.24, 1.2)
+        for _ in range(12):
+            if contrast(accent_bg.Y, accent_fg.Y) >= 4.5:
+                break
+            accent_bg = P(accent_bg.L + (0.02 if is_dark else -0.02))
 
-        gtk_css = f"""/* Libadwaita GTK4 / GTK3 Material You (M3) Monet Dynamic Theme with Translucency */
+        a = 0.92
+        gtk_css = f"""/* Libadwaita / GTK Monet palette - generated by monet-panel.py */
+@define-color accent_color {accent_text.hex()};
+@define-color accent_bg_color {accent_bg.hex()};
+@define-color accent_fg_color {accent_fg.hex()};
 
-@define-color accent_color {accent_color};
-@define-color accent_bg_color {accent_color};
-@define-color accent_fg_color {accent_fg};
+@define-color window_bg_color {window_bg.a(a)};
+@define-color window_fg_color {fg.hex()};
+@define-color view_bg_color {view_bg.a(a)};
+@define-color view_fg_color {fg.hex()};
+@define-color headerbar_bg_color {header_bg.a(a)};
+@define-color headerbar_fg_color {fg.hex()};
+@define-color headerbar_border_color {fg.a(0.10)};
+@define-color headerbar_backdrop_color {header_bg.a(a)};
+@define-color sidebar_bg_color {sidebar_bg.a(a)};
+@define-color sidebar_fg_color {fg.hex()};
+@define-color sidebar_backdrop_color {sidebar_bg.a(a)};
+@define-color sidebar_border_color {fg.a(0.10)};
+@define-color secondary_sidebar_bg_color {side2_bg.a(a)};
+@define-color secondary_sidebar_fg_color {fg.hex()};
+@define-color secondary_sidebar_backdrop_color {side2_bg.a(a)};
+@define-color secondary_sidebar_border_color {fg.a(0.10)};
+@define-color card_bg_color {card_bg.a(0.94)};
+@define-color card_fg_color {fg.hex()};
+@define-color card_border_color {fg.a(0.08)};
+@define-color popover_bg_color {card_bg.a(0.97)};
+@define-color popover_fg_color {fg.hex()};
+@define-color dialog_bg_color {card_bg.a(0.97)};
+@define-color dialog_fg_color {fg.hex()};
 
-@define-color window_bg_color {window_bg};
-@define-color window_fg_color {window_fg};
+window.background {{ background-color: @window_bg_color; }}
+headerbar, .titlebar {{ background-color: @headerbar_bg_color; }}
 
-@define-color view_bg_color {view_bg};
-@define-color view_fg_color {window_fg};
-
-@define-color headerbar_bg_color {header_bg};
-@define-color headerbar_fg_color {window_fg};
-@define-color headerbar_border_color rgba({palette['accent_rgb']}, 0.15);
-@define-color headerbar_backdrop_color {header_bg};
-
-@define-color sidebar_bg_color {sidebar_bg};
-@define-color sidebar_fg_color {window_fg};
-@define-color sidebar_backdrop_color {sidebar_bg};
-@define-color sidebar_border_color rgba({palette['accent_rgb']}, 0.15);
-
-@define-color secondary_sidebar_bg_color {secondary_sidebar_bg};
-@define-color secondary_sidebar_fg_color {window_fg};
-@define-color secondary_sidebar_backdrop_color {secondary_sidebar_bg};
-@define-color secondary_sidebar_border_color rgba({palette['accent_rgb']}, 0.15);
-
-@define-color card_bg_color {card_bg};
-@define-color card_fg_color {window_fg};
-@define-color card_border_color rgba({palette['accent_rgb']}, 0.12);
-
-@define-color popover_bg_color {card_bg};
-@define-color popover_fg_color {window_fg};
-
-@define-color dialog_bg_color {card_bg};
-@define-color dialog_fg_color {window_fg};
-
-/* 1. Window Background: 0.92 Translucent Acrylic Tint */
-window.background {{
-  background-color: @window_bg_color;
-}}
-
-/* 2. Headerbars: Translucent matching window */
-headerbar,
-.titlebar {{
-  background-color: @headerbar_bg_color;
-}}
-
-/* 3. Eliminate Popover / Context Menu Rectangular Ghost Box */
-popover,
-popover.background {{
-  background-color: transparent;
-  box-shadow: none;
-}}
-
+popover, popover.background {{ background-color: transparent; box-shadow: none; }}
 popover > contents {{
   background-color: @popover_bg_color;
   border-radius: 14px;
-  border: 1px solid rgba({palette['accent_rgb']}, 0.18);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  border: 1px solid {fg.a(0.10)};
+  box-shadow: 0 4px 16px rgba(0, 0, 0, {0.45 if is_dark else 0.18});
 }}
 
-/* 4. Nautilus & Libadwaita Sidebars: Translucent Monet Tint */
-.sidebar-pane,
-.sidebar,
-placessidebar,
-navigation-sidebar,
-.navigation-sidebar {{
+.sidebar-pane, .sidebar, placessidebar, navigation-sidebar, .navigation-sidebar {{
   background-color: @sidebar_bg_color;
   color: @sidebar_fg_color;
 }}
-
-.navigation-sidebar row:hover,
-placessidebar row:hover {{
-  background-color: rgba({palette['accent_rgb']}, 0.14);
+.navigation-sidebar row:hover, placessidebar row:hover {{
+  background-color: {accent_bg.a(0.14)};
   border-radius: 10px;
 }}
-
-.navigation-sidebar row:selected,
-placessidebar row:selected {{
-  background-color: rgba({palette['accent_rgb']}, 0.25);
-  color: @accent_color;
-  border-radius: 10px;
-}}
-
-/* 5. Text Editor, Terminal & Views: Allow translucent window background to shine through */
-textview,
-textview text,
-.view {{
-  background-color: transparent;
+.navigation-sidebar row:selected, placessidebar row:selected {{
+  background-color: {accent_bg.a(0.24)};
   color: @window_fg_color;
+  border-radius: 10px;
 }}
 
-/* 6. Nautilus / File Manager views */
-.nautilus-window .view,
-.nautilus-window gridview,
-.nautilus-window columnview,
-.nautilus-window listview,
-.nautilus-window scrolledwindow {{
-  background-color: transparent;
-}}
+textview, textview text, .view {{ background-color: transparent; color: @window_fg_color; }}
+.nautilus-window .view, .nautilus-window gridview, .nautilus-window columnview,
+.nautilus-window listview, .nautilus-window scrolledwindow {{ background-color: transparent; }}
 """
-        # Write atomically to GTK4 & GTK3
         atomic_write(GTK4_CSS_PATH, gtk_css)
         atomic_write(GTK3_CSS_PATH, gtk_css)
-
-        print(f"[Monet] Applied GTK/Libadwaita theme (Accent: {accent_enum} / {accent_color})")
+        print(f"[Monet] Applied GTK/Libadwaita theme (Accent: {accent_enum} / {accent_bg.hex()})")
     except Exception as e:
         print(f"[Monet] Failed to apply GTK theme: {e}", file=sys.stderr)
+
 
 def reload_shell_stylesheet():
     """Reload GNOME Shell extension stylesheet with minimal latency (or zero-flicker hot reload)."""
@@ -1024,6 +1315,20 @@ def watch_wallpaper():
     bg_settings.connect('changed::picture-uri-dark', on_change)
     bg_settings.connect('changed::picture-uri', on_change)
     iface_settings.connect('changed::color-scheme', on_change)
+
+    # The Shell extension drops a marker while its backdrop blur runs; glass tints are tuned
+    # differently with and without blur, so regenerate whenever it appears or disappears.
+    runtime_dir = os.environ.get('XDG_RUNTIME_DIR') or f"/run/user/{os.getuid()}"
+    state['glass'] = glass_blur_active()
+
+    def on_runtime_change(_mon, file, _other, _event):
+        if file and file.get_basename() == GLASS_MARKER and glass_blur_active() != state['glass']:
+            state['glass'] = glass_blur_active()
+            print(f"[Monet] Liquid-glass backdrop {'active' if state['glass'] else 'inactive'}; regenerating")
+            GLib.timeout_add(200, lambda: (apply_all(force=True), False)[1])
+
+    runtime_monitor = Gio.File.new_for_path(runtime_dir).monitor_directory(Gio.FileMonitorFlags.NONE, None)
+    runtime_monitor.connect('changed', on_runtime_change)
 
     loop = GLib.MainLoop()
     try:
