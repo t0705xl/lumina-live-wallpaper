@@ -2,6 +2,7 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
+import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -81,7 +82,35 @@ export default class LuminaDebug extends Extension {
         global._luminaGlass.enable();
     }
 
+    // Put the first two normal windows into a fixed layout over the work area, for checking
+    // when the live wallpaper counts as hidden: halves (tiled), apart (40% each, 20% gap
+    // between), small (two small windows), stack (both over the same left half).
+    _arrange(layout) {
+        const wa = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
+        const wins = global.get_window_actors().map(a => a.meta_window)
+            .filter(w => w.get_window_type() === Meta.WindowType.NORMAL);
+        const W = wa.width, H = wa.height, half = Math.floor(W / 2), f = Math.round(W * 0.4);
+        const layouts = {
+            halves: [[0, 0, half, H], [half, 0, W - half, H]],
+            apart: [[0, 0, f, H], [W - f, 0, f, H]],
+            small: [[40, 40, 420, 320], [520, 80, 420, 320]],
+            stack: [[0, 0, half, H], [0, 0, half, H]],
+        };
+        const rects = layouts[layout];
+        if (!rects || wins.length < 2)
+            return false;
+        wins.slice(0, 2).forEach((w, i) => {
+            const [x, y, w2, h2] = rects[i];
+            w.move_resize_frame(false, wa.x + x, wa.y + y, w2, h2);
+        });
+        // A restack, as when the user clicks a window, so the occlusion check runs.
+        wins[0].activate(global.get_current_time());
+        return true;
+    }
+
     Menu(which) {
+        if (which.startsWith('windows:'))
+            return this._arrange(which.slice(8));
         if (which === 'loadGlass' || which === 'loadGlassQuery') {
             this._loadGlass(which === 'loadGlassQuery' ? `?v=${Date.now()}` : '')
                 .then(() => console.log('LUMINA-DEBUG loadGlass ok'))

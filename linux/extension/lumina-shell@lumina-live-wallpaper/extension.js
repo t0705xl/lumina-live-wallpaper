@@ -28,6 +28,37 @@ import * as UserWidget from 'resource:///org/gnome/shell/ui/userWidget.js';
 
 import {GlassManager} from './glass.js';
 
+// Pause the live wallpaper once windows hide this much of the work area between them. A single
+// window counts from 94% of the width and of the height, which leaves up to ~12% of the area.
+const COVERED_FRACTION = 0.92;
+
+// Area of the union of [x1, y1, x2, y2] rectangles: sweep the x strips between edges and merge
+// the y extents of the rectangles that span each strip. A handful of windows, so O(n^2 log n).
+function unionArea(rects) {
+    const xs = [...new Set(rects.flatMap(r => [r[0], r[2]]))].sort((a, b) => a - b);
+    let area = 0;
+    for (let i = 0; i + 1 < xs.length; i++) {
+        const spans = rects
+            .filter(r => r[0] <= xs[i] && r[2] >= xs[i + 1])
+            .map(r => [r[1], r[3]])
+            .sort((a, b) => a[0] - b[0]);
+        let covered = 0, top = 0, bottom = 0, open = false;
+        for (const [y1, y2] of spans) {
+            if (open && y1 <= bottom) {
+                bottom = Math.max(bottom, y2);
+                continue;
+            }
+            if (open)
+                covered += bottom - top;
+            [top, bottom, open] = [y1, y2, true];
+        }
+        if (open)
+            covered += bottom - top;
+        area += covered * (xs[i + 1] - xs[i]);
+    }
+    return area;
+}
+
 export default class QuickSettingsAvatarExtension extends Extension {
     enable() {
         this._avatar = null;
@@ -197,6 +228,8 @@ export default class QuickSettingsAvatarExtension extends Extension {
                 'in-fullscreen-changed', scheduleUpdate,
                 'restacked', scheduleUpdate,
                 'notify::focus-window', scheduleUpdate,
+                // end of a mouse move or resize: windows dragged to cover the desktop together
+                'grab-op-end', scheduleUpdate,
                 this
             );
             global.window_manager?.connectObject(
@@ -236,6 +269,7 @@ export default class QuickSettingsAvatarExtension extends Extension {
 
         const workArea = Main.layoutManager.getWorkAreaForMonitor?.(primaryIdx);
         const windows = activeWs.list_windows?.() ?? [];
+        const covered = [];
 
         for (const win of windows) {
             if (!win || win.minimized || !win.showing_on_its_workspace?.())
@@ -264,10 +298,19 @@ export default class QuickSettingsAvatarExtension extends Extension {
                 const rect = win.get_frame_rect();
                 if (rect.width >= workArea.width * 0.94 && rect.height >= workArea.height * 0.94)
                     return true;
+                const x1 = Math.max(rect.x, workArea.x);
+                const y1 = Math.max(rect.y, workArea.y);
+                const x2 = Math.min(rect.x + rect.width, workArea.x + workArea.width);
+                const y2 = Math.min(rect.y + rect.height, workArea.y + workArea.height);
+                if (x2 > x1 && y2 > y1)
+                    covered.push([x1, y1, x2, y2]);
             }
         }
 
-        return false;
+        // Several windows that cover the desktop between them, e.g. two tiled halves
+        // (Super+Left / Super+Right): the video would otherwise keep decoding unseen.
+        return !!workArea && covered.length > 1 &&
+            unionArea(covered) >= workArea.width * workArea.height * COVERED_FRACTION;
     }
 
     _updateOcclusionState() {
