@@ -1,10 +1,10 @@
 # Lumina Live Wallpaper & Monet Desktop System
 ## 阶段交接报告与人物/任务现状 (Handover & Status Report)
 
-- **生成时间**: 2026-11-11
-- **运行平台**: Microsoft Surface Pro 7+ (Fedora 44 / Linux 6.18+ / GNOME 50 Wayland)
-- **代码仓库**: `~/my-video/lumina-live-wallpaper` (Git Branch: `main`)
-- **系统核心服务**: `live-wallpaper.service` (PID: 14650) | `monet-panel.service` (PID: 14647)
+- **生成时间**: 2026-11-11（2026-11-13 更新：自绘液态玻璃、独立扩展 UUID、概览缩放修复，见第二节第 5 条与第六节）
+- **运行平台**: Microsoft Surface Pro 7+ (Fedora 44 / Linux 6.19 / GNOME 50 Wayland，2736×1824，缩放 200%)
+- **代码仓库**: `~/my-video/lumina-live-wallpaper`（2026-11-13 的改动在分支 `glass-rework`，未合并、未推送）
+- **系统核心服务**: `live-wallpaper.service` | `monet-panel.service`
 
 ---
 
@@ -14,6 +14,7 @@
 | :--- | :--- | :--- | :--- |
 | **Argon (架构与原型)** | 阶段一：奠基与架构建立 | 搭建 GStreamer 基础管线、设计 GJS 顶栏扩展原型、初步规划 Material You 取色原型与守护进程体系。 | 已完成初期架构设计，并平稳交接。 |
 | **Antigravity (当前调优者)** | 阶段二：本土化痛点攻坚与视觉重构 | 针对 Surface Pro 7+ 与 GNOME 50 环境：<br>1. 硬件级 30fps 限帧与多媒体功耗大幅压降；<br>2. 莫奈色彩直方图聚类重构（根治红信件偏色）；<br>3. 规避 GNOME 设置面板 `NOFOLLOW_SYMLINKS` 缺陷（硬链接方案）；<br>4. 状态栏液态玻璃去雾、去发白内阴影，修复 `RENAMED` 样式热重载失效漏洞。 | 本阶段任务全部交付并完成本地 Git 归档，随时可由 Argon 或下一负责人接力。 |
+| **Claude Code (2026-11-13)** | 阶段二续：玻璃重做与稳固 | 自绘圆角背景模糊 `glass.js`、OKLCH 取色与 WCAG 对比度求解、概览底层壁纸、扩展迁出借用的 UUID、安装脚本修复、无头预览工具 `dev/preview`。 | 已提交到 `glass-rework` 分支，等待用户验收。 |
 | **Next Maintainer (接班维护者)** | 阶段三：长效演进（待办建议） | 多显示器环境适配、壁纸自动轮播策略、打包 RPM/Flatpak 发行版、视用户指令决定是否向远程 GitHub 仓库推送代码。 | 待启动 |
 
 ---
@@ -49,6 +50,14 @@
   - 发现底层写入使用了 `os.replace`（产生 `IN_MOVED_TO` / `Gio.FileMonitorEvent.RENAMED` 事件 8），原扩展监听白名单直接过滤了事件 8，导致 CSS 从未生效。
   - 修复了 `extension.js` 的过滤白名单，并改为直接覆盖写入，确保修改后毫秒级无缝防抖热重载。
 
+### 5. 2026-11-13：自绘液态玻璃、独立 UUID、概览缩放
+- **自绘背景模糊 `glass.js`**：顶栏胶囊、快捷设置、Dock 都用 BlitNode → BlurNode → 圆角遮罩/饱和度/折射着色器绘制；参数由 CSS 的 `-lumina-blur / -lumina-saturation / -lumina-brightness / -lumina-refraction / -lumina-max-luma / -lumina-min-luma` 控制，`-lumina-blur: 0` 即关闭。顶栏与 BoxPointer 必须 `OffscreenRedirect.NEVER` 才能采样背景。
+- **莫奈取色改为 OKLCH**：按顶栏区域的壁纸亮度求玻璃底色透明度，保证 WCAG 对比度；明暗两套色调由同一调色板生成。
+- **概览底层壁纸**：三指上滑第一下（窗口选择器）壁纸模糊 56px、压暗到 0.66；第二下（应用网格）清晰壁纸 + 遮罩。
+- **概览缩放回桌面的直线**：GNOME 在整个缩放过程中把工作区卡片的壁纸裁到“屏幕减顶栏”的工作区，圆角也在这条边上；透明顶栏下就成了一条停在顶栏下沿的直线，结束时顶栏那条再突然出现。`WorkspaceClipPatch` 让裁剪区随状态值从工作区平滑长到整屏，卡片四边一起到达屏幕边缘；禁用扩展时恢复 GNOME 原样。
+- **扩展 UUID**：原先借用 extensions.gnome.org 上真实存在的 `avatar-quick-settings@github.leginreklaw`，在线更新会把我们的代码覆盖掉。现为 `lumina-shell@lumina-live-wallpaper`（名称 Lumina Shell，保留头像功能）。旧机器上由 `lumina-migrate-uuid.service` 在下次登录、GNOME Shell 启动前一次性切换，旧目录移到 `~/.local/share/lumina-backup/<日期>-old-uuid/`。
+- **安装脚本**：原来漏装 `glass.js`（全新安装会导致扩展加载失败）；`gnome-extensions enable` 对尚未被 Shell 加载的扩展无效，安装脚本现直接写入 `enabled-extensions`。
+
 ---
 
 ## 三、 系统运行状态与文件部署映射矩阵
@@ -58,33 +67,28 @@
 # 查看壁纸守护进程与莫奈服务
 systemctl --user status live-wallpaper.service monet-panel.service
 ```
-- `live-wallpaper.service`: `active (running)`, PID 14650, 稳态单核 CPU ~4.5%。
-- `monet-panel.service`: `active (running)`, PID 14647, 内存 ~22MB。
+- `live-wallpaper.service`：视频播放时守护进程本身约 3–7% 单核（2026-11-13 实测）。
+- `monet-panel.service`：只在壁纸或明暗模式变化时工作。
 
 ### 2. 核心文件部署与仓库映射表
 | 本机实际部署路径 | 代码仓库源文件路径 (`lumina-live-wallpaper`) | 文件说明 |
 | :--- | :--- | :--- |
-| `~/.local/bin/live-wallpaper-daemon` | `daemon/live-wallpaper-daemon` | GStreamer 硬件解码与窗口渲染守护进程 |
-| `~/.local/bin/monet-panel.py` | `linux/monet-panel.py` | 莫奈取色引擎与全系统色彩联动生成器 |
-| `~/.local/bin/set-live-wallpaper` | `cli/set-live-wallpaper` | 用户 CLI 快捷工具（支持 `--list`, `--remove` 等） |
-| `~/.local/share/gnome-shell/extensions/avatar-quick-settings@github.leginreklaw/` | `linux/extension/avatar-quick-settings@github.leginreklaw/` | GNOME Shell 扩展（负责液态玻璃、头像、窗口遮挡暂停、无缝 CSS 热重载） |
+| `~/.local/bin/live-wallpaper-daemon` | `linux/live-wallpaper-daemon` | GStreamer 硬件解码与窗口渲染守护进程 |
+| `~/.local/bin/monet-panel.py` | `linux/monet-panel.py` | 莫奈取色引擎与全系统色彩联动生成器（顶栏 CSS 写进扩展目录的 `stylesheet.css`） |
+| `~/.local/bin/set-live-wallpaper` | `linux/set-live-wallpaper` | 用户 CLI 快捷工具（支持 `--list`, `--remove` 等） |
+| `~/.local/share/gnome-shell/extensions/lumina-shell@lumina-live-wallpaper/` | `linux/extension/lumina-shell@lumina-live-wallpaper/` | GNOME Shell 扩展：`extension.js`（头像、窗口遮挡暂停、CSS 热重载）+ `glass.js`（液态玻璃、概览壁纸、概览缩放裁剪） |
+| `~/.local/bin/lumina-migrate-uuid` + `~/.config/systemd/user/lumina-migrate-uuid.service` | `linux/lumina-migrate-uuid`, `linux/systemd/lumina-migrate-uuid.service` | 旧 UUID → 新 UUID 的一次性迁移，执行后自行停用 |
 | `~/.config/systemd/user/live-wallpaper.service` | `linux/systemd/live-wallpaper.service` | 壁纸服务 systemd 用户单元配置 |
 | `~/.config/systemd/user/monet-panel.service` | `linux/systemd/monet-panel.service` | 莫奈服务 systemd 用户单元配置 |
+| （不部署） | `dev/preview/` | 隔离的无头 gnome-shell 预览：截图检查顶栏、快捷设置、概览，不影响真实桌面 |
 
 ---
 
 ## 四、 Git 仓库与本地版本状态
 
 - **仓库根目录**: `~/my-video/lumina-live-wallpaper`
-- **当前最新提交**:
-  ```text
-  commit 331f5f4bfa55bb05d4dfc80cf55cae72ebdf0b5b
-  Author: EzBsk
-  Date:   Wed Nov 11 08:13:40 2026 -0600
-
-      fix(panel): eliminate cloudy fog band on top pills and fix stylesheet hot-reload in extension
-  ```
-- **远程分支状态**: `origin/main` 暂未建立同步，遵照用户约束**未执行远程 push**，所有成果均已完整保存在本地 Git 树中。
+- **分支**：`main` 停在 2026-11-11 的版本；2026-11-13 的改动全部在 `glass-rework`（`git log main..glass-rework` 查看），用户验收后再合并。
+- **远程**：`origin` 指向 GitHub，遵照用户约束**未执行远程 push**。
 
 ---
 
@@ -100,10 +104,13 @@ set-live-wallpaper --list
 # 3. 手动重新提取当前壁纸的莫奈色并注入系统
 python3 ~/.local/bin/monet-panel.py
 
-# 4. 强制无闪烁刷新 GNOME Shell 顶栏液态玻璃样式
-gdbus call --session --dest org.gnome.Shell.Extensions --object-path /org/gnome/Shell/Extensions --method org.gnome.Shell.Extensions.DisableExtension "avatar-quick-settings@github.leginreklaw"
-sleep 0.2
-gdbus call --session --dest org.gnome.Shell.Extensions --object-path /org/gnome/Shell/Extensions --method org.gnome.Shell.Extensions.EnableExtension "avatar-quick-settings@github.leginreklaw"
+# 4. 顶栏样式：monet-panel 写入 stylesheet.css 后扩展会自动热重载，无需开关扩展
+#    改了 extension.js / glass.js 则需要注销重新登录（Wayland 下无法重启 Shell）
+
+# 5. 不注销预览：隔离的无头 GNOME Shell + 截图（输出在 ~/.cache/lumina-preview/run/lumina-debug/）
+dev/preview/preview.sh shoot <壁纸路径> prefer-dark <标签>
+dev/preview/preview.sh menu overview | appGrid | desktop | state:0.3   # state: 把概览冻结在缩放中途
+dev/preview/preview.sh shot <名字>; dev/preview/preview.sh stop
 ```
 
 ---
@@ -114,4 +121,8 @@ gdbus call --session --dest org.gnome.Shell.Extensions --object-path /org/gnome/
    - 当前底层（GStreamer 限帧解码、硬链接设置同步、莫奈取色、顶栏液态玻璃）已经形成稳定闭环，架构极为干净。
    - 后续可着眼于高层应用层功能，如：在快捷设置面板中添加“一键切换动态壁纸”开关，或开发一个图形化壁纸选择器前端。
 2. **远程推送**：
-   - 当用户确认需要同步到 GitHub 远程仓库时，只需执行 `git push origin main` 即可。
+   - 当用户确认需要同步到 GitHub 远程仓库时，先把 `glass-rework` 合并进 `main`，再 `git push origin main`。
+3. **已知问题（2026-11-13 实测）**：
+   - **玻璃在视频播放时很贵**：同一场景下 gnome-shell 主线程 CPU，视频暂停 4–8% 单核；视频播放 + 玻璃 87%；视频播放、玻璃关闭（`-lumina-blur: 0`）21%。GPU 忙碌率两种情况都是 45%。也就是说玻璃每帧在 CPU 上的开销约 66% 单核，原因是每个胶囊每帧都新建 BlurNode 和一串离屏渲染。可能的方向：整条顶栏合成一次模糊而不是每个胶囊各做一次；视频播放时降低玻璃更新频率。
+   - **耗电瓦数未测到**：测试时插着电源（状态为 Charging），电池功率读数是充电功率，作废；需要拔电再测一次。
+   - **退出概览时可能的画面跳变（读代码推测，未实测）**：概览里的卡片显示静态封面，桌面上是视频当前帧，退出概览时两者可能对不上。
