@@ -469,6 +469,113 @@ export const GlassEffect = GObject.registerClass({
 
 const LIVE_WALLPAPER_TITLE = 'GNOME Live Wallpaper';
 
+function findLiveWallpaperActor() {
+    return global.get_window_actors().find(a => a.meta_window?.get_title?.() === LIVE_WALLPAPER_TITLE) ?? null;
+}
+
+// Rounded-rectangle mask for the live clone in a workspace card, with the rect and corner radius
+// GNOME gives the card's static background (Meta.BackgroundContent rounded clip), so the live
+// picture has exactly the card's corners. Worked out in stage pixels: the offscreen texture the
+// effect draws from covers the clone's paint box plus Clutter's padding, so u_fbo maps texture
+// coordinates back to the stage.
+const CARD_MASK_DECL = `
+uniform vec4 u_fbo;
+uniform vec4 u_rect;
+uniform float u_radius;
+uniform float u_aa;
+`;
+const CARD_MASK_CODE = `
+vec2 p = u_fbo.xy + cogl_tex_coord_in[0].st * u_fbo.zw;
+vec2 halfsz = 0.5 * u_rect.zw;
+float r = min(u_radius, min(halfsz.x, halfsz.y));
+vec2 q = abs(p - (u_rect.xy + halfsz)) - (halfsz - vec2(r));
+float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+cogl_color_out *= clamp(0.5 - d / u_aa, 0.0, 1.0);
+`;
+
+const CardMaskEffect = GObject.registerClass({
+    GTypeName: `LuminaCardMaskEffect_${GLib.uuid_string_random().replace(/-/g, '')}`,
+}, class LuminaCardMaskEffect extends Shell.GLSLEffect {
+    _init() {
+        super._init();
+        this._loc = {};
+        for (const name of ['u_fbo', 'u_rect', 'u_radius', 'u_aa'])
+            this._loc[name] = this.get_uniform_location(name);
+        this.clip = null; // {rect: Graphene.Rect in monitor units, radius, monitor}
+    }
+
+    vfunc_build_pipeline() {
+        this.add_glsl_snippet(Cogl.SnippetHook.FRAGMENT, CARD_MASK_DECL, CARD_MASK_CODE, false);
+    }
+
+    vfunc_paint_target(node, paintContext) {
+        this._syncUniforms();
+        super.vfunc_paint_target(node, paintContext);
+    }
+
+    _syncUniforms() {
+        const actor = this.get_actor();
+        const tex = this.get_texture();
+        if (!this.clip || !actor || !tex)
+            return;
+        // The offscreen texture is in the clone's own (unscaled) coordinates and spans its box
+        // [0, w] x [0, h] grown by Clutter (_clutter_actor_box_enlarge_for_effects): right and
+        // bottom edges at ceil(w + 0.75), size that of the texture.
+        const rs = actor.get_resource_scale();
+        const [w, h] = actor.get_size();
+        const fw = tex.get_width() / rs, fh = tex.get_height() / rs;
+        const fx2 = Math.ceil(w + 0.75), fy2 = Math.ceil(h + 0.75);
+        // The clone shows the monitor-sized window: monitor units map onto [0, w] x [0, h].
+        const {rect, radius, monitor} = this.clip;
+        const sx = w / monitor.width, sy = h / monitor.height;
+        // one screen pixel, in the clone's units
+        const px = 1 / Math.max(1e-3, actor.scale_x * rs);
+        // The card's straight edges are cut by its bin clip; the mask only has to shape the
+        // corners. Grown by a pixel all round so rounding in the texture mapping cannot leave a
+        // seam along an edge.
+        this.set_uniform_float(this._loc.u_fbo, 4, [fx2 - fw, fy2 - fh, fw, fh]);
+        this.set_uniform_float(this._loc.u_rect, 4, [
+            rect.origin.x * sx - px, rect.origin.y * sy - px,
+            rect.size.width * sx + 2 * px, rect.size.height * sy + 2 * px]);
+        this.set_uniform_float(this._loc.u_radius, 1, [radius * sx + px]);
+        this.set_uniform_float(this._loc.u_aa, 1, [px]);
+    }
+});
+
+// Holds the live clone in a card's background group. It fills what the group allocates it but
+// asks for no size, since the group's preferred size feeds GNOME's workspace layout. The clone
+// inside keeps the window's natural size and is shrunk with an actor scale: a Clutter.Clone that
+// scales itself to its allocation does so outside the transform its paint box (and so the mask
+// effect's texture) is computed from.
+const LiveCardHolder = GObject.registerClass({
+    GTypeName: `LuminaLiveCardHolder_${GLib.uuid_string_random().replace(/-/g, '')}`,
+}, class LuminaLiveCardHolder extends Clutter.Actor {
+    _init(source) {
+        super._init({x_expand: true, y_expand: true});
+        this.clone = new Clutter.Clone({source});
+        this.mask = new CardMaskEffect();
+        this.clone.add_effect_with_name('lumina-card-mask', this.mask);
+        this.add_child(this.clone);
+        this.connect('notify::allocation', () => this._fit());
+        this.clone.connect('notify::allocation', () => this._fit());
+    }
+
+    vfunc_get_preferred_width(_forHeight) {
+        return [0, 0];
+    }
+
+    vfunc_get_preferred_height(_forWidth) {
+        return [0, 0];
+    }
+
+    _fit() {
+        const [w, h] = this.get_size();
+        const [cw, ch] = this.clone.get_size();
+        if (cw > 0 && ch > 0)
+            this.clone.set_scale(w / cw, h / ch);
+    }
+});
+
 // How far the wallpaper "sinks" behind the window picker: blur radius in logical pixels and
 // the brightness it is dimmed to. The workspace card above shows the same wallpaper sharp, so
 // the blurred, darker copy reads as a floor the card floats over instead of a double image.
@@ -574,7 +681,7 @@ class OverviewWallpaper {
     }
 
     _syncLive() {
-        const actor = global.get_window_actors().find(a => a.meta_window?.get_title?.() === LIVE_WALLPAPER_TITLE);
+        const actor = findLiveWallpaperActor();
         if (this._liveClone?.source === actor && actor)
             return;
         this._liveClone?.destroy();
@@ -660,6 +767,41 @@ class WorkspaceClipPatch {
             clipBin(bg);
         };
 
+        // GNOME draws the card's wallpaper from the static image, which for a live wallpaper is
+        // its cover (the first frame). Over it goes a live clone of the video-wallpaper window,
+        // so the card moves like the desktop does and, at the end of the zoom back to the
+        // desktop, already shows the frame the desktop shows instead of cutting from the cover
+        // to the video. It is masked to the card's rounded rect; the bin clip above crops it
+        // like the static image.
+        const syncLive = bg => {
+            const group = bg._backgroundGroup;
+            const content = bg._bgManager?.backgroundActor?.content;
+            const monitor = Main.layoutManager.monitors[bg._monitorIndex];
+            const source = findLiveWallpaperActor();
+            let holder = bg._luminaLive;
+            if (holder && holder.clone.source !== source) {
+                holder.destroy();
+                holder = null;
+            }
+            if (!source || !group || !content || !monitor)
+                return;
+            if (!holder) {
+                holder = new LiveCardHolder(source);
+                group.add_child(holder);
+                bg._luminaLive = holder;
+                holder.connect('destroy', () => {
+                    if (bg._luminaLive === holder)
+                        bg._luminaLive = null;
+                });
+            }
+            group.set_child_above_sibling(holder, null);
+            const radius = content.rounded_clip_radius ?? 0;
+            holder.mask.clip = {rect: bg._luminaClipRect, radius, monitor};
+            // No corners left to round on the desktop: skip the offscreen pass.
+            holder.mask.enabled = radius >= 0.5;
+            holder.mask.queue_repaint();
+        };
+
         proto._updateRoundedClipBounds = function () {
             const content = this._bgManager?.backgroundActor?.content;
             const e = edges(this);
@@ -675,6 +817,8 @@ class WorkspaceClipPatch {
             rect.size.height = e.m.height - (e.t + e.b) * keep;
             content.set_rounded_clip_bounds(rect);
             clipBin(this);
+            this._luminaClipRect = rect;
+            syncLive(this);
         };
         proto._updateBorderRadius = function () {
             origRadius.call(this);
@@ -688,6 +832,8 @@ class WorkspaceClipPatch {
         this._proto._updateRoundedClipBounds = this._origBounds;
         this._proto._updateBorderRadius = this._origRadius;
         for (const [bg, id] of this._live) {
+            bg._luminaLive?.destroy();
+            delete bg._luminaClipRect;
             bg._bin?.disconnect(id);
             if (bg._bin) {
                 bg._bin.remove_clip();
