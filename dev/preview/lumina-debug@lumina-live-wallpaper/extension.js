@@ -1,5 +1,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import Clutter from 'gi://Clutter';
+import Cogl from 'gi://Cogl';
 import Shell from 'gi://Shell';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -23,8 +25,51 @@ export default class LuminaDebug extends Extension {
         this._impl.export(Gio.DBus.session, '/org/lumina/Debug');
     }
     disable() {
+        this._animate(false);
         this._impl?.unexport();
         this._impl = null;
+    }
+
+    // Benchmark load: a translucent full-screen layer over the wallpaper (under windows and the
+    // bar) that changes colour 30 times a second, like a 30 fps video wallpaper.
+    _animate(on) {
+        if (this._animId) {
+            GLib.source_remove(this._animId);
+            this._animId = 0;
+        }
+        this._animActor?.destroy();
+        this._animActor = null;
+        if (!on)
+            return;
+        const m = Main.layoutManager.primaryMonitor;
+        const a = new Clutter.Actor({x: m.x, y: m.y, width: m.width, height: m.height, opacity: 150});
+        Main.layoutManager._backgroundGroup.add_child(a);
+        this._animActor = a;
+        let i = 0;
+        this._animId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 33, () => {
+            i++;
+            const t = i * 0.21;
+            a.background_color = new Cogl.Color({
+                red: Math.round(128 + 120 * Math.sin(t)),
+                green: Math.round(128 + 120 * Math.sin(t + 2.1)),
+                blue: Math.round(128 + 120 * Math.sin(t + 4.2)),
+                alpha: 255,
+            });
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    // Frame counter for benchmarks: 'frames:reset' starts, 'frames:log' writes the rate to the log.
+    _frames(cmd) {
+        if (cmd === 'reset') {
+            if (!this._paintId)
+                this._paintId = global.stage.connect('after-paint', () => this._frameCount++);
+            this._frameCount = 0;
+            this._frameT0 = GLib.get_monotonic_time();
+        } else if (this._paintId) {
+            const dt = (GLib.get_monotonic_time() - this._frameT0) / 1e6;
+            console.log(`LUMINA-DEBUG frames ${this._frameCount} in ${dt.toFixed(2)} s = ${(this._frameCount / dt).toFixed(1)} fps`);
+        }
     }
     // Mirrors the Looking Glass line given to the user: load glass.js into a running Shell whose
     // extension was loaded before glass.js existed (no re-login).
@@ -45,6 +90,14 @@ export default class LuminaDebug extends Extension {
         }
         if (which === 'overview') {
             Main.overview.show();
+            return true;
+        }
+        if (which === 'animate:on' || which === 'animate:off') {
+            this._animate(which === 'animate:on');
+            return true;
+        }
+        if (which === 'frames:reset' || which === 'frames:log') {
+            this._frames(which.slice(7));
             return true;
         }
         if (which.startsWith('state:')) {

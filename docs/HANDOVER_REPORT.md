@@ -111,6 +111,11 @@ python3 ~/.local/bin/monet-panel.py
 dev/preview/preview.sh shoot <壁纸路径> prefer-dark <标签>
 dev/preview/preview.sh menu overview | appGrid | desktop | state:0.3   # state: 把概览冻结在缩放中途
 dev/preview/preview.sh shot <名字>; dev/preview/preview.sh stop
+
+# 6. 玻璃性能基准：真实分辨率预览 + 30 fps 动态背景，测预览 Shell 的 CPU/帧率/GPU
+PREVIEW_SIZE=2736x1824 dev/preview/preview.sh start prefer-dark
+DBUS_SESSION_BUS_ADDRESS=$(cat ~/.cache/lumina-preview/bus) python3 dev/preview/scale.py 2
+python3 dev/preview/bench.py 20 idle noglass glass
 ```
 
 ---
@@ -123,6 +128,6 @@ dev/preview/preview.sh shot <名字>; dev/preview/preview.sh stop
 2. **远程推送**：
    - 当用户确认需要同步到 GitHub 远程仓库时，先把 `glass-rework` 合并进 `main`，再 `git push origin main`。
 3. **已知问题（2026-11-13 实测）**：
-   - **玻璃在视频播放时很贵**：同一场景下 gnome-shell 主线程 CPU，视频暂停 4–8% 单核；视频播放 + 玻璃 87%；视频播放、玻璃关闭（`-lumina-blur: 0`）21%。GPU 忙碌率两种情况都是 45%。也就是说玻璃每帧在 CPU 上的开销约 66% 单核，原因是每个胶囊每帧都新建 BlurNode 和一串离屏渲染。可能的方向：整条顶栏合成一次模糊而不是每个胶囊各做一次；视频播放时降低玻璃更新频率。
+   - **玻璃在视频播放时很贵 → 已优化**：真实桌面实测 gnome-shell 主线程 CPU，视频播放 + 玻璃 87% 单核，关掉玻璃 21%。原因是 `Clutter.BlurNode` 每个胶囊每帧都重新分配纹理和帧缓冲（预览里单它就占每帧 13.5 ms 中的 9.2 ms）。现改为自写的两遍高斯模糊，纹理只在尺寸变化时重建，CSS 参数按 `style-changed` 缓存：预览（2736×1824、200%、30 fps 动态背景，`dev/preview/bench.py`）中开玻璃每帧 CPU 13.5 ms → 2.4 ms，关玻璃为 1.3 ms；画面与旧版逐像素对比差异 ≤ 2/255。真实桌面上的新数字待用户重新加载后复测。
    - **耗电瓦数未测到**：测试时插着电源（状态为 Charging），电池功率读数是充电功率，作废；需要拔电再测一次。
    - **退出概览时可能的画面跳变（读代码推测，未实测）**：概览里的卡片显示静态封面，桌面上是视频当前帧，退出概览时两者可能对不上。

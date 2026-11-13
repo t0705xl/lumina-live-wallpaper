@@ -104,6 +104,53 @@ float a = clamp(0.5 - d * u_px, 0.0, 1.0) * u_opacity;
 cogl_color_out = c * a;
 `;
 
+// Separable Gaussian blur pass (run once horizontally, once vertically). Each tap reads between two
+// texels so linear filtering sums both: BLUR_MAX_TAPS taps cover a radius of 2 * (BLUR_MAX_TAPS - 1)
+// texels. Weights and offsets come from gaussianTaps().
+const BLUR_MAX_TAPS = 16;
+const BLUR_DECL = `
+uniform vec2 u_step;
+uniform float u_w[${BLUR_MAX_TAPS}];
+uniform float u_o[${BLUR_MAX_TAPS}];
+uniform int u_n;
+`;
+const BLUR_POST = `
+vec2 uv = cogl_tex_coord_in[0].st;
+vec4 acc = texture2D(cogl_sampler0, uv) * u_w[0];
+for (int i = 1; i < ${BLUR_MAX_TAPS}; i++) {
+    if (i >= u_n)
+        break;
+    vec2 off = u_step * u_o[i];
+    acc += (texture2D(cogl_sampler0, uv + off) + texture2D(cogl_sampler0, uv - off)) * u_w[i];
+}
+cogl_color_out = acc;
+`;
+// Largest sigma (in blur-texture pixels) the taps cover out to 3 sigma; a larger blur downscales more.
+const BLUR_MAX_SIGMA = (2 * (BLUR_MAX_TAPS - 1)) / 3;
+
+function gaussianTaps(sigma) {
+    const w = [1], o = [0];
+    if (sigma > 0.3) {
+        const r = Math.min(Math.ceil(sigma * 3), 2 * (BLUR_MAX_TAPS - 1));
+        const g = [];
+        for (let i = 0; i <= r; i++)
+            g.push(Math.exp(-(i * i) / (2 * sigma * sigma)));
+        const sum = g.reduce((acc, v, i) => acc + (i ? 2 * v : v), 0);
+        w[0] = g[0] / sum;
+        for (let i = 1; i <= r; i += 2) {
+            const a = g[i] / sum, b = i < r ? g[i + 1] / sum : 0;
+            w.push(a + b);
+            o.push((i * a + (i + 1) * b) / (a + b));
+        }
+    }
+    const n = w.length;
+    while (w.length < BLUR_MAX_TAPS) {
+        w.push(0);
+        o.push(0);
+    }
+    return {w, o, n};
+}
+
 function coglContext() {
     return global.stage.context.get_backend().get_cogl_context();
 }
@@ -156,6 +203,16 @@ export const GlassEffect = GObject.registerClass({
 //   -lumina-gloss (0..1 specular highlight strength),
 //   -lumina-max-luma / -lumina-min-luma (per-pixel backdrop limits, sRGB luma 0..1),
 //   -lumina-lift-r/-g/-b (colour the backdrop is lifted toward when below min-luma)
+    _style(actor) {
+        if (this._styleCache === undefined) {
+            const style = this._readStyle(actor);
+            if (style)
+                style.radius = this._cornerRadius(actor, Infinity, Infinity);
+            this._styleCache = style;
+        }
+        return this._styleCache;
+    }
+
     _readStyle(actor) {
         let node = null;
         try {
@@ -179,10 +236,36 @@ export const GlassEffect = GObject.registerClass({
         };
     }
 
-    _ensureTargets(w, h, tw, th) {
+    // All render targets are kept between frames and only rebuilt when the size changes, so a
+    // steady pill costs no allocations per frame (Clutter.BlurNode allocated its textures and
+    // framebuffers on every frame, which was most of the glass's CPU time).
+    _ensureTargets(w, h, tw, th, sigma) {
         const ctx = coglContext();
         if (!this._bg || this._bg.w !== w || this._bg.h !== h)
             this._bg = makeTarget(ctx, w, h);
+        if (!this._small || this._small.w !== tw || this._small.h !== th) {
+            // _small: the downscaled backdrop, drawn with the horizontal pass into _h;
+            // _h: drawn with the vertical pass into _out.
+            this._small = makeTarget(ctx, tw, th);
+            this._h = makeTarget(ctx, tw, th);
+            for (const [t, step] of [[this._small, [1 / tw, 0]], [this._h, [0, 1 / th]]]) {
+                t.pipe.add_snippet(Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT, BLUR_DECL, BLUR_POST));
+                t.loc = {};
+                for (const u of ['u_step', 'u_w', 'u_o', 'u_n'])
+                    t.loc[u] = t.pipe.get_uniform_location(u);
+                t.pipe.set_uniform_float(t.loc.u_step, 2, 1, step);
+            }
+            this._taps = null;
+        }
+        if (this._taps?.sigma !== sigma) {
+            const taps = gaussianTaps(sigma);
+            for (const t of [this._small, this._h]) {
+                t.pipe.set_uniform_float(t.loc.u_w, 1, BLUR_MAX_TAPS, taps.w);
+                t.pipe.set_uniform_float(t.loc.u_o, 1, BLUR_MAX_TAPS, taps.o);
+                t.pipe.set_uniform_1i(t.loc.u_n, taps.n);
+            }
+            this._taps = {sigma};
+        }
         if (!this._out || this._out.w !== tw || this._out.h !== th) {
             this._out = makeTarget(ctx, tw, th);
             const snippet = Cogl.Snippet.new(Cogl.SnippetHook.FRAGMENT, FRAG_DECL, FRAG_POST);
@@ -244,7 +327,7 @@ export const GlassEffect = GObject.registerClass({
     }
 
     _addBackdrop(node, paintContext, actor) {
-        const style = this._readStyle(actor);
+        const style = this._style(actor);
         if (!style || style.sigma <= 0)
             return;
         const fb = paintContext.get_framebuffer();
@@ -312,15 +395,15 @@ export const GlassEffect = GObject.registerClass({
             this._requeued = false;
         }
 
-        const ds = this._downscale;
+        const ds = Math.max(this._downscale, Math.ceil((style.sigma * scale) / BLUR_MAX_SIGMA));
         const tw = Math.max(1, Math.ceil(w / ds));
         const th = Math.max(1, Math.ceil(h / ds));
-        this._ensureTargets(w, h, tw, th);
+        this._ensureTargets(w, h, tw, th, (style.sigma * scale) / ds);
 
         const [aw, ah] = actor.get_size();
         const pipe = this._out.pipe;
         pipe.set_uniform_float(this._loc.u_size, 2, 1, [aw, ah]);
-        pipe.set_uniform_1f(this._loc.u_radius, this._cornerRadius(actor, aw, ah));
+        pipe.set_uniform_1f(this._loc.u_radius, Math.min(style.radius, aw / 2, ah / 2));
         pipe.set_uniform_1f(this._loc.u_px, scale);
         pipe.set_uniform_1f(this._loc.u_sat, style.sat);
         pipe.set_uniform_1f(this._loc.u_bright, style.bright);
@@ -335,13 +418,20 @@ export const GlassEffect = GObject.registerClass({
         node.add_child(outNode);
         outNode.add_rectangle(new Clutter.ActorBox({x1: 0, y1: 0, x2: aw, y2: ah}));
 
-        const blurNode = Clutter.BlurNode.new(tw, th, (style.sigma * scale) / ds);
-        outNode.add_child(blurNode);
-        blurNode.add_rectangle(new Clutter.ActorBox({x1: 0, y1: 0, x2: tw, y2: th}));
+        // backdrop -> _bg (full size) -> _small (downscaled) -> horizontal pass -> _h
+        //   -> vertical pass -> _out -> masked/refracted onto the stage
+        const small = new Clutter.ActorBox({x1: 0, y1: 0, x2: tw, y2: th});
+        const vNode = Clutter.LayerNode.new_to_framebuffer(this._h.fb, this._h.pipe);
+        outNode.add_child(vNode);
+        vNode.add_rectangle(small);
+
+        const hNode = Clutter.LayerNode.new_to_framebuffer(this._small.fb, this._small.pipe);
+        vNode.add_child(hNode);
+        hNode.add_rectangle(small);
 
         const bgNode = Clutter.LayerNode.new_to_framebuffer(this._bg.fb, this._bg.pipe);
-        blurNode.add_child(bgNode);
-        bgNode.add_rectangle(new Clutter.ActorBox({x1: 0, y1: 0, x2: tw, y2: th}));
+        hNode.add_child(bgNode);
+        bgNode.add_rectangle(small);
 
         const blit = Clutter.BlitNode.new(srcFb);
         bgNode.add_child(blit);
@@ -366,7 +456,14 @@ export const GlassEffect = GObject.registerClass({
             GLib.source_remove(this._redrawId);
             this._redrawId = 0;
         }
+        this.get_actor()?.disconnectObject(this);
+        this._styleCache = undefined;
         super.vfunc_set_actor(actor);
+        if (actor instanceof St.Widget) {
+            actor.connectObject('style-changed', () => {
+                this._styleCache = undefined;
+            }, this);
+        }
     }
 });
 
