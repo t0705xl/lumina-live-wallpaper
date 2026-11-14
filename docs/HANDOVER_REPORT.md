@@ -3,7 +3,7 @@
 
 - **生成时间**: 2026-11-11（2026-11-13 更新：自绘液态玻璃、独立扩展 UUID、概览缩放修复，见第二节第 5 条；2026-11-14 更新：屏幕尺寸播放副本、分屏暂停、概览卡片实时壁纸、真实桌面实测，见第二节第 6 条与第六节）
 - **运行平台**: Microsoft Surface Pro 7+ (Fedora 44 / Linux 6.19 / GNOME 50 Wayland，2736×1824，缩放 200%)
-- **代码仓库**: `~/my-video/lumina-live-wallpaper`（`glass-rework` 已于 2026-11-14 快进合并进本地 `main`；尚未推送，本机没有 GitHub 凭据）
+- **代码仓库**: `~/my-video/lumina-live-wallpaper`（`glass-rework` 已于 2026-11-14 快进合并进 `main` 并推送到 GitHub）
 - **系统核心服务**: `live-wallpaper.service` | `monet-panel.service`
 
 ---
@@ -14,7 +14,7 @@
 | :--- | :--- | :--- | :--- |
 | **Argon (架构与原型)** | 阶段一：奠基与架构建立 | 搭建 GStreamer 基础管线、设计 GJS 顶栏扩展原型、初步规划 Material You 取色原型与守护进程体系。 | 已完成初期架构设计，并平稳交接。 |
 | **Antigravity (当前调优者)** | 阶段二：本土化痛点攻坚与视觉重构 | 针对 Surface Pro 7+ 与 GNOME 50 环境：<br>1. 硬件级 30fps 限帧与多媒体功耗大幅压降；<br>2. 莫奈色彩直方图聚类重构（根治红信件偏色）；<br>3. 规避 GNOME 设置面板 `NOFOLLOW_SYMLINKS` 缺陷（硬链接方案）；<br>4. 状态栏液态玻璃去雾、去发白内阴影，修复 `RENAMED` 样式热重载失效漏洞。 | 本阶段任务全部交付并完成本地 Git 归档，随时可由 Argon 或下一负责人接力。 |
-| **Claude Code (2026-11-13 / 14)** | 阶段二续：玻璃重做、性能与稳固 | 自绘圆角背景模糊 `glass.js`（含自写缓存两遍高斯模糊）、OKLCH 取色与 WCAG 对比度求解、概览底层壁纸与卡片实时壁纸、扩展迁出借用的 UUID、屏幕尺寸 30 fps 播放副本、分屏暂停、安装脚本修复、无头预览工具 `dev/preview`。 | 已合并进本地 `main`（未推送）；新代码已在本机生效（2026-11-14 开机后），等待用户验收。 |
+| **Claude Code (2026-11-13 / 14)** | 阶段二续：玻璃重做、性能与稳固 | 自绘圆角背景模糊 `glass.js`（含自写缓存两遍高斯模糊）、OKLCH 取色与 WCAG 对比度求解、概览底层壁纸与卡片实时壁纸、扩展迁出借用的 UUID、屏幕尺寸 30 fps 播放副本、分屏暂停、安装脚本修复、无头预览工具 `dev/preview`。 | 已合并进 `main` 并推送；新代码已在本机生效（2026-11-14 开机后），等待用户验收。 |
 | **Next Maintainer (接班维护者)** | 阶段三：长效演进（待办建议） | 多显示器环境适配、壁纸自动轮播策略、打包 RPM/Flatpak 发行版、在电池供电下实测功耗瓦数。 | 待启动 |
 
 ---
@@ -105,7 +105,8 @@ systemctl --user status live-wallpaper.service monet-panel.service
 
 - **仓库根目录**: `~/my-video/lumina-live-wallpaper`
 - **分支**：2026-11-14 按用户指示把 `glass-rework` 快进合并进 `main`（`main` 原停在 2026-11-11 的版本）。
-- **远程**：`origin` 指向 `https://github.com/t0705xl/lumina-live-wallpaper.git`。本机没有配置凭据（无 credential helper、无 `gh`、无 SSH 密钥），推送需由用户登录后执行 `git push origin main`。
+- **远程**：`origin` 为 `git@github.com:t0705xl/lumina-live-wallpaper.git`（SSH）。本机连不上 github.com，SSH 通过 `~/.ssh/config` 走本地代理。
+- **隐私（2026-11-14）**：推送前改写了全部历史：作者/提交者邮箱换成 GitHub 隐私邮箱 `294123201+t0705xl@users.noreply.github.com`（本仓库 `user.email` 已设为它），本机用户名与路径从所有历史版本中移除（预览调试扩展改名为 `lumina-debug@lumina-live-wallpaper`），随后强制推送。改写前的历史只备份在本机 `~/.local/share/lumina-backup/2026-11-14-before-history-scrub.bundle`，不要推送。
 
 ---
 
@@ -147,7 +148,7 @@ python3 dev/preview/bench.py 20 idle noglass glass
    - 当前底层（GStreamer 限帧解码、硬链接设置同步、莫奈取色、顶栏液态玻璃）已经形成稳定闭环，架构极为干净。
    - 后续可着眼于高层应用层功能，如：在快捷设置面板中添加“一键切换动态壁纸”开关，或开发一个图形化壁纸选择器前端。
 2. **远程推送**：
-   - `main` 已包含全部改动，用户配置好 GitHub 凭据后执行 `git push origin main` 即可（远程 `main` 目前只有最早的两个提交，可直接快进）。
+   - 已于 2026-11-14 推送 `main`；以后在 `main` 上直接提交并 `git push` 即可。提交前确认 `git config user.email` 仍是隐私邮箱。
 3. **已知问题与状态（2026-11-13 / 14）**：
    - **玻璃在视频播放时很贵 → 已优化并已在真实桌面复测**：真实桌面实测 gnome-shell 主线程 CPU，视频播放 + 玻璃 87% 单核，关掉玻璃 21%。原因是 `Clutter.BlurNode` 每个胶囊每帧都重新分配纹理和帧缓冲（预览里单它就占每帧 13.5 ms 中的 9.2 ms）。现改为自写的两遍高斯模糊，纹理只在尺寸变化时重建，CSS 参数按 `style-changed` 缓存：预览（2736×1824、200%、30 fps 动态背景，`dev/preview/bench.py`）中开玻璃每帧 CPU 13.5 ms → 2.4 ms，关玻璃为 1.3 ms；画面与旧版逐像素对比差异 ≤ 2/255。真实桌面复测：gnome-shell 87% → 31% 单核（关玻璃 18%），见第二节第 6 条的表格。
    - **耗电瓦数未测到**：测试时插着电源（状态为 Charging），电池功率读数是充电功率，作废；需要拔电再测一次。
