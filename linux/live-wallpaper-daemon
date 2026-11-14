@@ -581,12 +581,36 @@ function resolveLiveVideoForWallpaper(wallpaperPath) {
         if (GLib.file_test(candidate, GLib.FileTest.EXISTS)) {
             return candidate;
         }
-        if (GLib.file_test(defaultVideoPath, GLib.FileTest.EXISTS)) {
-            return defaultVideoPath;
-        }
+        // No video for this cover (e.g. its wallpaper was removed): show the cover itself as a
+        // static wallpaper. Falling back to current-live-wallpaper.mp4 here played a different
+        // wallpaper's video over it.
     }
 
     return null;
+}
+
+// current-live-wallpaper.mp4 names the live wallpaper being played. set-live-wallpaper points it
+// there, but switching in Settings -> Appearance only changes picture-uri, so follow it here.
+function pointCurrentLinkAt(sourcePath) {
+    const target = realPath(sourcePath);
+    if (!target || target === defaultVideoPath) {
+        return;
+    }
+    try {
+        if (GLib.file_test(defaultVideoPath, GLib.FileTest.IS_SYMLINK) &&
+            GLib.file_read_link(defaultVideoPath) === target) {
+            return;
+        }
+        if (GLib.file_test(defaultVideoPath, GLib.FileTest.EXISTS) &&
+            !GLib.file_test(defaultVideoPath, GLib.FileTest.IS_SYMLINK)) {
+            return; // a real file someone put there: leave it alone
+        }
+        const tmp = `${defaultVideoPath}.${GLib.random_int()}.tmp`;
+        Gio.File.new_for_path(tmp).make_symbolic_link(target, null);
+        Gio.File.new_for_path(tmp).move(Gio.File.new_for_path(defaultVideoPath), Gio.FileCopyFlags.OVERWRITE, null, null);
+    } catch (e) {
+        printerr(`[LiveWallpaper] Could not update ${defaultVideoPath}: ${e}\n`);
+    }
 }
 
 function syncWallpaperMode() {
@@ -605,6 +629,7 @@ function syncWallpaperMode() {
             cancelFadeAnimation();
             currentVideoPath = targetVideo;
             currentSourcePath = sourceVideo;
+            pointCurrentLinkAt(sourceVideo);
             pendingPreroll = true;
             segmentArmed = false;
             print(`[LiveWallpaper] Activating dynamic video wallpaper: ${currentVideoPath} (cover: ${activeWallpaper})`);

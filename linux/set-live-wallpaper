@@ -250,6 +250,10 @@ case "$1" in
         RM_STEM="${2%-live.mp4}"
         RM_STEM="${RM_STEM%-cover.png}"
         rm -f "$LIVE_DIR/${RM_STEM}-live.mp4" "$COVERS_DIR/${RM_STEM}-cover.png" "$BG_DIR/${RM_STEM}-cover.png" "$BG_DIR/${RM_STEM}-cover.jpg"
+        # current-live-wallpaper.mp4 must not keep naming a deleted wallpaper
+        if [ -L "$LIVE_DIR/current-live-wallpaper.mp4" ] && [ ! -e "$LIVE_DIR/current-live-wallpaper.mp4" ]; then
+            rm -f "$LIVE_DIR/current-live-wallpaper.mp4"
+        fi
         python3 - "$REGISTRY_JSON" "$RM_STEM" << 'RMEOF'
 import sys, os, json
 reg_path, stem = sys.argv[1:3]
