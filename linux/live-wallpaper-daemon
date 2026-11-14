@@ -12,6 +12,7 @@ const GLib = imports.gi.GLib;
 const Gst = imports.gi.Gst;
 const Cairo = imports.gi.cairo;
 const ByteArray = imports.byteArray;
+const System = imports.system;
 
 if (!GLib.getenv('DISPLAY')) {
     GLib.setenv('DISPLAY', ':0', false);
@@ -52,32 +53,60 @@ function getPrimaryGeometry() {
 let geom = getPrimaryGeometry();
 const maxFps = Math.max(15, Math.min(120, parseInt(GLib.getenv('LIVE_WALLPAPER_MAX_FPS') || '30', 10) || 30));
 
-// Hardware-accelerated zero-copy DMA-BUF sink (same engine & GdkCicpParams BT.709->sRGB color pipeline as GNOME Showtime)
-const sink = Gst.ElementFactory.make('gtk4paintablesink', 'sink');
-sink.set_property('sync', true);
+// The playbin, its sink and the sink's paintable. They are rebuilt when the decoder is released
+// (see releaseDecoder): playbin keeps the VA display it was given as a context even in NULL, and
+// with it the decoder's GPU buffers, so only a new pipeline lets them go.
+let pipeline = null;
+let videoSink = null;
+let paintable = null;
+let bus = null;
 
-// Wrap sink with zero-copy videorate (drop-only=true) to cap 60fps/120fps videos at 30fps without mapping DMABuf memory
-let videoSinkElement = sink;
-const rateLimiter = Gst.ElementFactory.make('videorate', 'ratelimiter');
-if (rateLimiter) {
-    rateLimiter.set_property('drop-only', true);
-    rateLimiter.set_property('max-rate', maxFps);
-    const sinkBin = Gst.Bin.new('video-sink-bin');
-    sinkBin.add(rateLimiter);
-    sinkBin.add(sink);
-    if (rateLimiter.link(sink)) {
-        const sinkPad = rateLimiter.get_static_pad('sink');
-        if (sinkPad) {
-            sinkBin.add_pad(Gst.GhostPad.new('sink', sinkPad));
-            videoSinkElement = sinkBin;
+function buildPipeline() {
+    // Hardware-accelerated zero-copy DMA-BUF sink (same engine & GdkCicpParams BT.709->sRGB color pipeline as GNOME Showtime)
+    const sink = Gst.ElementFactory.make('gtk4paintablesink', 'sink');
+    sink.set_property('sync', true);
+
+    // Wrap sink with zero-copy videorate (drop-only=true) to cap 60fps/120fps videos at 30fps without mapping DMABuf memory
+    let videoSinkElement = sink;
+    const rateLimiter = Gst.ElementFactory.make('videorate', 'ratelimiter');
+    if (rateLimiter) {
+        rateLimiter.set_property('drop-only', true);
+        rateLimiter.set_property('max-rate', maxFps);
+        const sinkBin = Gst.Bin.new('video-sink-bin');
+        sinkBin.add(rateLimiter);
+        sinkBin.add(sink);
+        if (rateLimiter.link(sink)) {
+            const sinkPad = rateLimiter.get_static_pad('sink');
+            if (sinkPad) {
+                sinkBin.add_pad(Gst.GhostPad.new('sink', sinkPad));
+                videoSinkElement = sinkBin;
+            }
         }
     }
+
+    pipeline = Gst.ElementFactory.make('playbin', 'player');
+    pipeline.set_property('video-sink', videoSinkElement);
+    // GstPlayFlags: VIDEO (1 << 0) | NATIVE_VIDEO (1 << 6) = 65 (no audio/subtitles, direct VA-API DMA-BUF zero-copy)
+    pipeline.set_property('flags', (1 << 0) | (1 << 6));
+    paintable = sink.get_property('paintable');
+    videoSink = sink;
+
+    bus = pipeline.get_bus();
+    bus.add_signal_watch();
+    bus.connect('message::async-done', onAsyncDone);
+    bus.connect('message::segment-done', onSegmentDone);
+    bus.connect('message::eos', onEos);
+    bus.connect('message::error', onError);
 }
 
-const pipeline = Gst.ElementFactory.make('playbin', 'player');
-pipeline.set_property('video-sink', videoSinkElement);
-// GstPlayFlags: VIDEO (1 << 0) | NATIVE_VIDEO (1 << 6) = 65 (no audio/subtitles, direct VA-API DMA-BUF zero-copy)
-pipeline.set_property('flags', (1 << 0) | (1 << 6));
+// Drop the pipeline and everything it holds, leaving a fresh one that opens nothing until it
+// gets a uri and leaves NULL.
+function rebuildPipeline() {
+    pipeline.set_state(Gst.State.NULL);
+    bus.remove_signal_watch();
+    buildPipeline();
+    System.gc();
+}
 
 const disp = Gdk.Display.get_default();
 const cssProvider = new Gtk.CssProvider();
@@ -100,7 +129,6 @@ if (disp) {
 const emptyBytes = GLib.Bytes.new(new Uint8Array([0, 0, 0, 0]));
 const emptyPaintable = Gdk.MemoryTexture.new(1, 1, Gdk.MemoryFormat.B8G8R8A8, emptyBytes, 4);
 
-const paintable = sink.get_property('paintable');
 const picture = new Gtk.Picture({
     paintable: emptyPaintable,
     content_fit: Gtk.ContentFit.COVER,
@@ -129,6 +157,29 @@ let fadeTimerId = 0;
 let errorRetryTimerId = 0;
 let pendingPreroll = false;
 let segmentArmed = false;
+
+// A paused pipeline keeps the VA-API decoder, its surface pool and the frames handed to GTK
+// (about 160 MB of GPU buffers for a screen-sized clip, which on an integrated GPU is system RAM).
+// After LIVE_WALLPAPER_RELEASE_AFTER seconds of pause (default 60, 0 = never) they are given back:
+//  1. settle: while paused the sink shows the last frame it rendered, but its last sample is the
+//     next one, queued when playback stopped (and the pipeline position falls just before the
+//     shown frame). A flushing accurate seek to that sample's timestamp makes the sink show it:
+//     the picture steps one frame forward, as if the video had played one more frame. After a
+//     seek the shown frame is the seek target (checked against the decoded frames), while the
+//     last sample is again one ahead, so the target is what gets remembered.
+//  2. that frame is rendered into one texture that stays up, and the pipeline is rebuilt (playbin
+//     keeps its VA display, and with it the buffers, until it is destroyed).
+//  3. on resume the new pipeline prerolls, seeks to the same timestamp and swaps the video back
+//     in once that frame is in the sink, so the hand-over shows the same picture.
+const releaseAfterS = Math.max(0, parseInt(GLib.getenv('LIVE_WALLPAPER_RELEASE_AFTER') || '60', 10) || 0);
+let releaseTimerId = 0;
+let releaseStage = 0;       // 1: settling on the queued frame, 2: waiting for it to be shown
+let decoderReleased = false;
+let releasedPosition = 0;   // ns: timestamp of the held frame, the settle seek's target
+let resumeStage = 0;        // 1: prerolling after a release, 2: seeking back, 3: waiting for that frame
+let frameWaitTimerId = 0;
+let frameWaitSigId = 0;
+let frameWaitTarget = null;
 
 function cancelFadeAnimation() {
     if (fadeTimerId !== 0) {
@@ -164,6 +215,165 @@ function setWindowTransparent(transparent) {
         GLib.spawn_command_line_sync(
             `xprop -id ${winXid} -remove _NET_WM_WINDOW_OPACITY`
         );
+    }
+}
+
+function cancelReleaseTimer() {
+    if (releaseTimerId !== 0) {
+        GLib.source_remove(releaseTimerId);
+        releaseTimerId = 0;
+    }
+}
+
+function cancelFrameWait() {
+    if (frameWaitTimerId !== 0) {
+        GLib.source_remove(frameWaitTimerId);
+        frameWaitTimerId = 0;
+    }
+    if (frameWaitSigId !== 0) {
+        frameWaitTarget.disconnect(frameWaitSigId);
+        frameWaitSigId = 0;
+        frameWaitTarget = null;
+    }
+}
+
+// async-done can come before or after the sink hands a prerolled frame to its paintable, so act
+// on the paintable's next invalidate-contents, or after a short wait if it already has the frame.
+function afterFrameShown(fn) {
+    cancelFrameWait();
+    const done = () => {
+        cancelFrameWait();
+        fn();
+    };
+    frameWaitTarget = paintable;
+    frameWaitSigId = paintable.connect('invalidate-contents', done);
+    frameWaitTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
+        frameWaitTimerId = 0;
+        done();
+        return GLib.SOURCE_REMOVE;
+    });
+}
+
+// Forget a release (new video, static wallpaper, error, wake from suspend): those paths rebuild
+// the pipeline state and put the sink's paintable back themselves.
+function resetDecoderRelease() {
+    cancelReleaseTimer();
+    cancelFrameWait();
+    releaseStage = 0;
+    decoderReleased = false;
+    resumeStage = 0;
+}
+
+function scheduleDecoderRelease() {
+    if (!releaseAfterS || decoderReleased || releaseStage !== 0 || releaseTimerId !== 0) {
+        return;
+    }
+    releaseTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, releaseAfterS, () => {
+        releaseTimerId = 0;
+        releaseDecoder();
+        return GLib.SOURCE_REMOVE;
+    });
+}
+
+// Timestamp of the sink's last sample, or -1.
+function lastSamplePts() {
+    const sample = videoSink.get_property('last-sample');
+    const buf = sample ? sample.get_buffer() : null;
+    return buf && buf.pts >= 0 && buf.pts < 1e15 ? buf.pts : -1; // not GST_CLOCK_TIME_NONE
+}
+
+function renderCurrentFrame() {
+    const w = paintable.get_intrinsic_width();
+    const h = paintable.get_intrinsic_height();
+    const renderer = win.get_renderer();
+    if (w <= 0 || h <= 0 || !renderer) {
+        return null;
+    }
+    const snap = Gtk.Snapshot.new();
+    paintable.snapshot(snap, w, h);
+    const node = snap.to_node();
+    return node ? renderer.render_texture(node, null) : null;
+}
+
+function releaseDecoder() {
+    if (!isLiveActive || decoderReleased || releaseStage !== 0 || !shouldPausePlayback()) {
+        return;
+    }
+    const [, state, pending] = pipeline.get_state(0);
+    if (pendingPreroll || !segmentArmed || resumeStage !== 0 || fadeTimerId !== 0 ||
+        state !== Gst.State.PAUSED || pending !== Gst.State.VOID_PENDING ||
+        picture.get_paintable() !== paintable) {
+        scheduleDecoderRelease(); // prerolling, seeking or fading: try again later
+        return;
+    }
+    let target = lastSamplePts();
+    if (target < 0) {
+        const [okPos, pos] = pipeline.query_position(Gst.Format.TIME);
+        target = okPos && pos > 0 ? pos : 0;
+    }
+    // At the loop point the queued sample is stamped with the clip's duration (no frame is
+    // there; seeking to it ends the clip): the frame that follows is the loop's first.
+    const [okDur, dur] = pipeline.query_duration(Gst.Format.TIME);
+    if (okDur && dur > 0 && target >= dur - 5e6) {
+        target = 0;
+    }
+    // Not a SEGMENT seek (see onAsyncDone); if playback resumes before the release completes,
+    // the clip plays to EOS and onEos() re-arms the loop.
+    releaseStage = 1;
+    releasedPosition = target;
+    const ok = pipeline.seek(1.0, Gst.Format.TIME, Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE,
+        Gst.SeekType.SET, target, Gst.SeekType.NONE, -1);
+    if (!ok) {
+        releaseStage = 0;
+        printerr('[LiveWallpaper] Could not settle on a frame, decoder stays loaded\n');
+    }
+}
+
+// The settled frame is on screen: keep it as a texture and drop the pipeline.
+function completeDecoderRelease() {
+    releaseStage = 0;
+    if (!isLiveActive || decoderReleased) {
+        return;
+    }
+    if (!shouldPausePlayback()) {
+        pipeline.set_state(Gst.State.PLAYING); // asked to play while settling
+        return;
+    }
+    let held = null;
+    try {
+        held = renderCurrentFrame();
+    } catch (e) {
+        printerr(`[LiveWallpaper] Could not keep the current frame, decoder stays loaded: ${e}\n`);
+    }
+    if (!held) {
+        return;
+    }
+    picture.set_paintable(held);
+    decoderReleased = true;
+    rebuildPipeline();
+    print(`[LiveWallpaper] Paused for ${releaseAfterS} s: released the decoder, holding the frame at ${(releasedPosition / 1e9).toFixed(3)} s`);
+}
+
+function restoreDecoder() {
+    decoderReleased = false;
+    resumeStage = 1;
+    pipeline.set_property('uri', GLib.filename_to_uri(currentVideoPath, null));
+    pipeline.set_state(Gst.State.PAUSED);
+}
+
+function finishResume() {
+    if (resumeStage === 0) {
+        return;
+    }
+    cancelFrameWait();
+    resumeStage = 0;
+    picture.set_paintable(paintable);
+    picture.queue_draw();
+    print(`[LiveWallpaper] Decoder restored at the held frame (${(releasedPosition / 1e9).toFixed(3)} s)`);
+    if (shouldPausePlayback()) {
+        scheduleDecoderRelease();
+    } else {
+        pipeline.set_state(Gst.State.PLAYING);
     }
 }
 
@@ -218,7 +428,10 @@ function startFadeOutToStatic() {
     }
 
     // Pause on the current video frame so it can smoothly dissolve over the static wallpaper
-    pipeline.set_state(Gst.State.PAUSED);
+    // (a released decoder is already NULL and its frame is held on screen)
+    if (pipeline.get_state(0)[1] !== Gst.State.NULL) {
+        pipeline.set_state(Gst.State.PAUSED);
+    }
 
     const totalSteps = 8;
     let step = 0;
@@ -358,17 +571,71 @@ function updatePlaybackState(reason) {
     if (reason) {
         print(`[LiveWallpaper] ${paused ? 'Pausing' : 'Resuming'} playback (${reason})`);
     }
-    pipeline.set_state(paused ? Gst.State.PAUSED : Gst.State.PLAYING);
+    if (paused) {
+        if (!decoderReleased && resumeStage === 0 && releaseStage === 0) {
+            pipeline.set_state(Gst.State.PAUSED);
+        }
+        scheduleDecoderRelease();
+    } else {
+        cancelReleaseTimer();
+        if (releaseStage !== 0) {
+            // settling for a release that is no longer wanted: play on from the settled frame
+            cancelFrameWait();
+            releaseStage = 0;
+            pipeline.set_state(Gst.State.PLAYING);
+        } else if (decoderReleased) {
+            restoreDecoder();
+        } else if (resumeStage === 0) {
+            pipeline.set_state(Gst.State.PLAYING);
+        }
+        // during a resume, finishResume() starts playback
+    }
 }
 
-const bus = pipeline.get_bus();
-bus.add_signal_watch();
-
-bus.connect('message::async-done', () => {
+function onAsyncDone() {
     if (!isLiveActive) {
         return;
     }
     errorRetries = 0;
+
+    if (resumeStage === 1) {
+        // prerolled from the start after a release: go back to the held frame's position.
+        // Not a SEGMENT seek: after a segment that began mid-clip, videorate drops the next
+        // loop's frames up to that point, freezing the picture for that long. Playing to EOS
+        // instead lets onEos() re-arm the usual gapless loop from 0 once the last frame is shown
+        // (that one wrap measured 41-45 ms between frames against the usual 33 ms).
+        resumeStage = 2;
+        const ok = pipeline.seek(
+            1.0,
+            Gst.Format.TIME,
+            Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE,
+            Gst.SeekType.SET,
+            releasedPosition,
+            Gst.SeekType.NONE,
+            -1
+        );
+        if (!ok) {
+            printerr('[LiveWallpaper] Seek back after a decoder release failed, resuming from the start\n');
+            finishResume();
+        }
+        return;
+    }
+    if (resumeStage === 2) {
+        resumeStage = 3;
+        afterFrameShown(finishResume);
+        return;
+    }
+    if (resumeStage === 3) {
+        return;
+    }
+    if (releaseStage === 1) {
+        releaseStage = 2;
+        afterFrameShown(completeDecoderRelease);
+        return;
+    }
+    if (releaseStage === 2) {
+        return;
+    }
 
     if (pendingPreroll) {
         pendingPreroll = false;
@@ -392,10 +659,11 @@ bus.connect('message::async-done', () => {
 
     if (shouldPausePlayback()) {
         pipeline.set_state(Gst.State.PAUSED);
+        scheduleDecoderRelease();
     }
-});
+}
 
-bus.connect('message::segment-done', () => {
+function onSegmentDone() {
     if (isLiveActive) {
         const ok = pipeline.seek(
             1.0,
@@ -414,9 +682,9 @@ bus.connect('message::segment-done', () => {
             );
         }
     }
-});
+}
 
-bus.connect('message::eos', () => {
+function onEos() {
     if (isLiveActive) {
         pipeline.seek(
             1.0,
@@ -428,11 +696,12 @@ bus.connect('message::eos', () => {
             -1
         );
     }
-});
+}
 
-bus.connect('message::error', (_bus, msg) => {
+function onError(_bus, msg) {
     const [err, dbg] = msg.parse_error();
     printerr(`[LiveWallpaper] GStreamer error: ${err.message} (${dbg || 'no debug'})\n`);
+    resetDecoderRelease();
     pipeline.set_state(Gst.State.NULL);
     cancelErrorRetryTimer();
     if (currentSourcePath && currentVideoPath !== currentSourcePath) {
@@ -457,7 +726,9 @@ bus.connect('message::error', (_bus, msg) => {
     } else if (errorRetries > 3) {
         printerr('[LiveWallpaper] Exceeded max error retries, halting playback until next wallpaper change.\n');
     }
-});
+}
+
+buildPipeline();
 
 const bgSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.background'});
 const ifaceSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
@@ -627,6 +898,7 @@ function syncWallpaperMode() {
 
         if (videoChanged) {
             cancelFadeAnimation();
+            resetDecoderRelease();
             currentVideoPath = targetVideo;
             currentSourcePath = sourceVideo;
             pointCurrentLinkAt(sourceVideo);
@@ -654,6 +926,7 @@ function syncWallpaperMode() {
         }
     } else {
         cancelErrorRetryTimer();
+        resetDecoderRelease();
         if (isLiveActive) {
             print(`[LiveWallpaper] Switching to native static wallpaper: ${activeWallpaper}`);
             isLiveActive = false;
@@ -798,13 +1071,14 @@ try {
             if (isSystemSleeping !== sleeping) {
                 isSystemSleeping = sleeping;
                 if (sleeping) {
-                    if (isLiveActive) {
+                    if (isLiveActive && !decoderReleased && resumeStage === 0 && releaseStage === 0) {
                         print('[LiveWallpaper] System suspending, releasing hardware decoder state');
                         pipeline.set_state(Gst.State.PAUSED);
                     }
                 } else {
                     if (isLiveActive && currentVideoPath) {
                         print('[LiveWallpaper] System resumed from suspend, refreshing VA-API/DMABuf pipeline');
+                        resetDecoderRelease();
                         pendingPreroll = true;
                         segmentArmed = false;
                         pipeline.set_state(Gst.State.NULL);

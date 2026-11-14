@@ -45,6 +45,7 @@ inner)  # runs inside dbus-run-session
     exec gnome-shell --headless $([ -n "$X11" ] || echo --no-x11) --wayland --virtual-monitor ${PREVIEW_SIZE:-1368x912} ;;
 start)
     "$0" stop >/dev/null 2>&1 || true
+    systemctl --user reset-failed lumina-preview.scope lumina-live-preview.scope >/dev/null 2>&1 || true
     [ -z "$NOSETUP" ] && setup; rm -f "$P/bus"
     systemd-run --user --scope --quiet --unit=lumina-preview -p MemoryMax=1400M -p MemorySwapMax=0 \
         env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u XDG_SESSION_TYPE \
@@ -59,14 +60,15 @@ live)   # the real daemon on the preview's Xwayland, D-Bus, dconf and runtime di
     [ -n "$DISP" ] || { echo "no Xwayland in the preview (start it with X11=1)"; exit 1; }
     systemd-run --user --scope --quiet --unit=lumina-live-preview -p MemoryMax=800M -p MemorySwapMax=0 \
         env -u WAYLAND_DISPLAY DISPLAY="$DISP" GDK_BACKEND=x11 DBUS_SESSION_BUS_ADDRESS="$(bus)" \
+        LIVE_WALLPAPER_RELEASE_AFTER="${LIVE_WALLPAPER_RELEASE_AFTER:-60}" \
         XAUTHORITY="$(ls -t "$P"/run/.mutter-Xwaylandauth.* | head -1)" \
         XDG_CONFIG_HOME="$P/config" XDG_CACHE_HOME="$P/cache" XDG_RUNTIME_DIR="$P/run" \
         gjs "$REPO/linux/live-wallpaper-daemon" > "$P/daemon.log" 2>&1 &
     for _ in $(seq 20); do grep -q Activating "$P/daemon.log" 2>/dev/null && break; sleep 0.5; done
     sleep 2; cat "$P/daemon.log" ;;
-pause)  # freeze the preview's live wallpaper on its current frame (as when windows cover it)
+pause|play)  # freeze the preview's live wallpaper (as when windows cover it) / let it play again
     DBUS_SESSION_BUS_ADDRESS=$(bus) gdbus emit --session --object-path /org/gnome/LiveWallpaper \
-        --signal org.gnome.LiveWallpaper.OcclusionChanged true ;;
+        --signal org.gnome.LiveWallpaper.OcclusionChanged "$([ "$1" = pause ] && echo true || echo false)" ;;
 menu)   call Menu "$2" ;;
 shot)   call Screenshot "$2" ;;
 shoot)
