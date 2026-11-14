@@ -1,9 +1,9 @@
 # Lumina Live Wallpaper & Monet Desktop System
 ## 阶段交接报告与人物/任务现状 (Handover & Status Report)
 
-- **生成时间**: 2026-11-11（2026-11-13 更新：自绘液态玻璃、独立扩展 UUID、概览缩放修复，见第二节第 5 条与第六节）
+- **生成时间**: 2026-11-11（2026-11-13 更新：自绘液态玻璃、独立扩展 UUID、概览缩放修复，见第二节第 5 条；2026-11-14 更新：屏幕尺寸播放副本、分屏暂停、概览卡片实时壁纸、真实桌面实测，见第二节第 6 条与第六节）
 - **运行平台**: Microsoft Surface Pro 7+ (Fedora 44 / Linux 6.19 / GNOME 50 Wayland，2736×1824，缩放 200%)
-- **代码仓库**: `~/my-video/lumina-live-wallpaper`（2026-11-13 的改动在分支 `glass-rework`，未合并、未推送）
+- **代码仓库**: `~/my-video/lumina-live-wallpaper`（`glass-rework` 已于 2026-11-14 快进合并进本地 `main`；尚未推送，本机没有 GitHub 凭据）
 - **系统核心服务**: `live-wallpaper.service` | `monet-panel.service`
 
 ---
@@ -14,8 +14,8 @@
 | :--- | :--- | :--- | :--- |
 | **Argon (架构与原型)** | 阶段一：奠基与架构建立 | 搭建 GStreamer 基础管线、设计 GJS 顶栏扩展原型、初步规划 Material You 取色原型与守护进程体系。 | 已完成初期架构设计，并平稳交接。 |
 | **Antigravity (当前调优者)** | 阶段二：本土化痛点攻坚与视觉重构 | 针对 Surface Pro 7+ 与 GNOME 50 环境：<br>1. 硬件级 30fps 限帧与多媒体功耗大幅压降；<br>2. 莫奈色彩直方图聚类重构（根治红信件偏色）；<br>3. 规避 GNOME 设置面板 `NOFOLLOW_SYMLINKS` 缺陷（硬链接方案）；<br>4. 状态栏液态玻璃去雾、去发白内阴影，修复 `RENAMED` 样式热重载失效漏洞。 | 本阶段任务全部交付并完成本地 Git 归档，随时可由 Argon 或下一负责人接力。 |
-| **Claude Code (2026-11-13)** | 阶段二续：玻璃重做与稳固 | 自绘圆角背景模糊 `glass.js`、OKLCH 取色与 WCAG 对比度求解、概览底层壁纸、扩展迁出借用的 UUID、安装脚本修复、无头预览工具 `dev/preview`。 | 已提交到 `glass-rework` 分支，等待用户验收。 |
-| **Next Maintainer (接班维护者)** | 阶段三：长效演进（待办建议） | 多显示器环境适配、壁纸自动轮播策略、打包 RPM/Flatpak 发行版、视用户指令决定是否向远程 GitHub 仓库推送代码。 | 待启动 |
+| **Claude Code (2026-11-13 / 14)** | 阶段二续：玻璃重做、性能与稳固 | 自绘圆角背景模糊 `glass.js`（含自写缓存两遍高斯模糊）、OKLCH 取色与 WCAG 对比度求解、概览底层壁纸与卡片实时壁纸、扩展迁出借用的 UUID、屏幕尺寸 30 fps 播放副本、分屏暂停、安装脚本修复、无头预览工具 `dev/preview`。 | 已合并进本地 `main`（未推送）；新代码已在本机生效（2026-11-14 开机后），等待用户验收。 |
+| **Next Maintainer (接班维护者)** | 阶段三：长效演进（待办建议） | 多显示器环境适配、壁纸自动轮播策略、打包 RPM/Flatpak 发行版、在电池供电下实测功耗瓦数。 | 待启动 |
 
 ---
 
@@ -26,7 +26,7 @@
   - **单核 CPU 占用**：由 **11.6%** 骤降并稳态锁定在 **4.5%**（降幅达 **61.2%**）。
   - **内存表现**：稳态内存驻留 ~540MB，且全程无内存泄漏。
 - **动态平滑过渡**：两段视频壁纸切换时，引入 `opacity: 0.24` 微降过渡，彻底消除了壁纸切换时的黑场闪烁感。
-- **全屏/最大化智能休眠**：在 GJS 扩展中监听窗口覆盖率与 `Maximized` 状态，当常规窗口遮挡面积 $\ge 94\%$ 时自动暂停视频解码；休眠时自动挂起，唤醒时自动重载自愈。
+- **窗口遮挡智能休眠**：扩展把主显示器上可见常规窗口的边框矩形裁到工作区内求并集，覆盖工作区 ≥ 92% 时暂停视频解码（单窗口最大化/全屏、Super+←/→ 左右分屏、几个窗口拼满都算）；窗口拖动或缩放结束时也会重新判断（2026-11-13 前只认单个最大化/全屏/≥94% 的窗口，分屏时视频照常解码）。休眠时自动挂起，唤醒时自动重载自愈。
 
 ### 2. 莫奈取色引擎重构 (Monet Engine)
 - **痛点原因**：原算法仅统计 RGB 均值与简单极值，画面中哪怕只有一张小小的红色信件或噪点像素，都会导致整个桌面主题被错误染成高饱和刺眼大红。
@@ -58,6 +58,22 @@
 - **扩展 UUID**：原先借用 extensions.gnome.org 上真实存在的 `avatar-quick-settings@github.leginreklaw`，在线更新会把我们的代码覆盖掉。现为 `lumina-shell@lumina-live-wallpaper`（名称 Lumina Shell，保留头像功能）。旧机器上由 `lumina-migrate-uuid.service` 在下次登录、GNOME Shell 启动前一次性切换，旧目录移到 `~/.local/share/lumina-backup/<日期>-old-uuid/`。
 - **安装脚本**：原来漏装 `glass.js`（全新安装会导致扩展加载失败）；`gnome-extensions enable` 对尚未被 Shell 加载的扩展无效，安装脚本现直接写入 `enabled-extensions`。
 
+### 6. 2026-11-13 / 14：性能与细节
+- **屏幕尺寸、30 fps 的播放副本（`lumina-fit-video`）**：30 fps 限帧发生在解码之后，4K/60 的壁纸在 2736×1824 屏幕上照样每秒解满 60 帧 4K。现在设壁纸时用 GPU（VA-API，失败时退回 x264）转一份刚好盖满屏幕、帧率 ≤ 30 的副本，放在 `~/.local/share/live-wallpaper/fitted/`，记在 `registry.json` 的 `fitted` 里；原文件仍是登记的壁纸。守护进程只在副本仍盖满当前显示器（旋转成竖屏就不行）、原文件未改动、副本没有播放失败时才用它，显示器几何变化时重新判断。4K/60 壁纸只解码：GPU 占用 33–34% → 19%（空闲 4%），GT 平均频率 ~370 → ~90 MHz；与原片同尺寸对比 PSNR 47–50 dB、SSIM 0.991。`set-live-wallpaper --fit-all` 重做全部副本，`--remove` 一并删除。
+- **分屏暂停**：见第 1 条「窗口遮挡智能休眠」。
+- **概览卡片里的实时壁纸**：GNOME 的工作区卡片画的是静态壁纸，也就是动态壁纸的封面（第一帧），从概览缩回桌面时先停在封面上，再跳到视频当前帧（信件壁纸上雾气、颜色、头发和花瓣都会跳）。现在卡片在静态图之上叠一个视频窗口的实时克隆，由 GLSL 效果按卡片自己的圆角矩形遮罩，缩回桌面时交接的是同一帧。
+- **`current-live-wallpaper.mp4` 链接**：原来只有 `set-live-wallpaper` 会更新它，在「设置 → 外观」里切换后它还指着旧壁纸；守护进程又把它当作“找不到对应视频的封面”的兜底，于是会在一张封面上播别的壁纸的视频。现在守护进程每次启用动态壁纸都把链接改指向它（原子替换），没有视频的封面按静态壁纸显示，`--remove` 会删掉悬空的链接。
+- **真实桌面实测（2026-11-13，终端最大化、强制视频在其后播放，只有顶栏那条露出视频；单核百分比）**：
+
+  | 情形 | gnome-shell CPU | 守护进程 CPU | GPU 总占用 |
+  | :--- | ---: | ---: | ---: |
+  | 暂停（基线） | 5.6% | 0% | 12.8% |
+  | 屏幕尺寸 30 fps 副本 + 玻璃 | 31.3% | 6.0% | 44.7% |
+  | 屏幕尺寸 30 fps 副本，关玻璃 | 17.8% | 6.2% | 43.4% |
+  | 原片 3840×2160@60 + 玻璃 | 34.7% | 6.8% | 52.5% |
+
+  换掉 `Clutter.BlurNode` 之前同样“视频 + 玻璃”是 87% 单核，关玻璃 21%。
+
 ---
 
 ## 三、 系统运行状态与文件部署映射矩阵
@@ -67,7 +83,7 @@
 # 查看壁纸守护进程与莫奈服务
 systemctl --user status live-wallpaper.service monet-panel.service
 ```
-- `live-wallpaper.service`：视频播放时守护进程本身约 3–7% 单核（2026-11-13 实测）。
+- `live-wallpaper.service`：视频播放时守护进程本身约 6% 单核，被窗口挡住时 0（2026-11-13 / 14 实测）。
 - `monet-panel.service`：只在壁纸或明暗模式变化时工作。
 
 ### 2. 核心文件部署与仓库映射表
@@ -75,7 +91,8 @@ systemctl --user status live-wallpaper.service monet-panel.service
 | :--- | :--- | :--- |
 | `~/.local/bin/live-wallpaper-daemon` | `linux/live-wallpaper-daemon` | GStreamer 硬件解码与窗口渲染守护进程 |
 | `~/.local/bin/monet-panel.py` | `linux/monet-panel.py` | 莫奈取色引擎与全系统色彩联动生成器（顶栏 CSS 写进扩展目录的 `stylesheet.css`） |
-| `~/.local/bin/set-live-wallpaper` | `linux/set-live-wallpaper` | 用户 CLI 快捷工具（支持 `--list`, `--remove` 等） |
+| `~/.local/bin/set-live-wallpaper` | `linux/set-live-wallpaper` | 用户 CLI 快捷工具（支持 `--list`, `--remove`, `--fit-all` 等） |
+| `~/.local/bin/lumina-fit-video` → `~/.local/share/live-wallpaper/fitted/` | `linux/lumina-fit-video` | 生成屏幕尺寸、≤ 30 fps 的播放副本，记入 `registry.json` 的 `fitted` |
 | `~/.local/share/gnome-shell/extensions/lumina-shell@lumina-live-wallpaper/` | `linux/extension/lumina-shell@lumina-live-wallpaper/` | GNOME Shell 扩展：`extension.js`（头像、窗口遮挡暂停、CSS 热重载）+ `glass.js`（液态玻璃、概览壁纸、概览缩放裁剪） |
 | `~/.local/bin/lumina-migrate-uuid` + `~/.config/systemd/user/lumina-migrate-uuid.service` | `linux/lumina-migrate-uuid`, `linux/systemd/lumina-migrate-uuid.service` | 旧 UUID → 新 UUID 的一次性迁移，执行后自行停用 |
 | `~/.config/systemd/user/live-wallpaper.service` | `linux/systemd/live-wallpaper.service` | 壁纸服务 systemd 用户单元配置 |
@@ -87,8 +104,8 @@ systemctl --user status live-wallpaper.service monet-panel.service
 ## 四、 Git 仓库与本地版本状态
 
 - **仓库根目录**: `~/my-video/lumina-live-wallpaper`
-- **分支**：`main` 停在 2026-11-11 的版本；2026-11-13 的改动全部在 `glass-rework`（`git log main..glass-rework` 查看），用户验收后再合并。
-- **远程**：`origin` 指向 GitHub，遵照用户约束**未执行远程 push**。
+- **分支**：2026-11-14 按用户指示把 `glass-rework` 快进合并进 `main`（`main` 原停在 2026-11-11 的版本）。
+- **远程**：`origin` 指向 `https://github.com/t0705xl/lumina-live-wallpaper.git`。本机没有配置凭据（无 credential helper、无 `gh`、无 SSH 密钥），推送需由用户登录后执行 `git push origin main`。
 
 ---
 
@@ -101,6 +118,9 @@ set-live-wallpaper ~/.local/share/backgrounds/your-video.mp4
 # 2. 列出当前所有已注册的动态壁纸
 set-live-wallpaper --list
 
+# 2b. 重新生成所有壁纸的屏幕尺寸播放副本（换了显示器分辨率后用）
+set-live-wallpaper --fit-all
+
 # 3. 手动重新提取当前壁纸的莫奈色并注入系统
 python3 ~/.local/bin/monet-panel.py
 
@@ -111,6 +131,7 @@ python3 ~/.local/bin/monet-panel.py
 dev/preview/preview.sh shoot <壁纸路径> prefer-dark <标签>
 dev/preview/preview.sh menu overview | appGrid | desktop | state:0.3   # state: 把概览冻结在缩放中途
 dev/preview/preview.sh shot <名字>; dev/preview/preview.sh stop
+X11=1 WP_URI=file://...-cover.png dev/preview/preview.sh start; dev/preview/preview.sh live   # 在预览里跑真实壁纸守护进程
 
 # 6. 玻璃性能基准：真实分辨率预览 + 30 fps 动态背景，测预览 Shell 的 CPU/帧率/GPU
 PREVIEW_SIZE=2736x1824 dev/preview/preview.sh start prefer-dark
@@ -126,8 +147,9 @@ python3 dev/preview/bench.py 20 idle noglass glass
    - 当前底层（GStreamer 限帧解码、硬链接设置同步、莫奈取色、顶栏液态玻璃）已经形成稳定闭环，架构极为干净。
    - 后续可着眼于高层应用层功能，如：在快捷设置面板中添加“一键切换动态壁纸”开关，或开发一个图形化壁纸选择器前端。
 2. **远程推送**：
-   - 当用户确认需要同步到 GitHub 远程仓库时，先把 `glass-rework` 合并进 `main`，再 `git push origin main`。
-3. **已知问题（2026-11-13 实测）**：
-   - **玻璃在视频播放时很贵 → 已优化**：真实桌面实测 gnome-shell 主线程 CPU，视频播放 + 玻璃 87% 单核，关掉玻璃 21%。原因是 `Clutter.BlurNode` 每个胶囊每帧都重新分配纹理和帧缓冲（预览里单它就占每帧 13.5 ms 中的 9.2 ms）。现改为自写的两遍高斯模糊，纹理只在尺寸变化时重建，CSS 参数按 `style-changed` 缓存：预览（2736×1824、200%、30 fps 动态背景，`dev/preview/bench.py`）中开玻璃每帧 CPU 13.5 ms → 2.4 ms，关玻璃为 1.3 ms；画面与旧版逐像素对比差异 ≤ 2/255。真实桌面上的新数字待用户重新加载后复测。
+   - `main` 已包含全部改动，用户配置好 GitHub 凭据后执行 `git push origin main` 即可（远程 `main` 目前只有最早的两个提交，可直接快进）。
+3. **已知问题与状态（2026-11-13 / 14）**：
+   - **玻璃在视频播放时很贵 → 已优化并已在真实桌面复测**：真实桌面实测 gnome-shell 主线程 CPU，视频播放 + 玻璃 87% 单核，关掉玻璃 21%。原因是 `Clutter.BlurNode` 每个胶囊每帧都重新分配纹理和帧缓冲（预览里单它就占每帧 13.5 ms 中的 9.2 ms）。现改为自写的两遍高斯模糊，纹理只在尺寸变化时重建，CSS 参数按 `style-changed` 缓存：预览（2736×1824、200%、30 fps 动态背景，`dev/preview/bench.py`）中开玻璃每帧 CPU 13.5 ms → 2.4 ms，关玻璃为 1.3 ms；画面与旧版逐像素对比差异 ≤ 2/255。真实桌面复测：gnome-shell 87% → 31% 单核（关玻璃 18%），见第二节第 6 条的表格。
    - **耗电瓦数未测到**：测试时插着电源（状态为 Charging），电池功率读数是充电功率，作废；需要拔电再测一次。
-   - **退出概览时可能的画面跳变（读代码推测，未实测）**：概览里的卡片显示静态封面，桌面上是视频当前帧，退出概览时两者可能对不上。
+   - **退出概览时的画面跳变 → 已修复**：在预览里跑真实守护进程确认了确实会跳（卡片显示封面，桌面是视频当前帧），现在卡片里叠了实时视频克隆，见第二节第 6 条。
+   - **待办**：拔掉电源测一次功耗瓦数；壁纸守护进程只看主显示器，多显示器未适配。
